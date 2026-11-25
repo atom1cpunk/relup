@@ -48,6 +48,14 @@ https://github.com/brave/brave-browser/releases
 
 You then pick a release, your CPU architecture and (only if the release has several) the file to track. `relup` reads the package name from the file's header, checks whether you already have the program installed, shows a short summary and asks once before saving. If the program isn't installed yet, it offers to install it.
 
+Once you are tracking programs, running `relup` opens the main menu:
+
+<p align="center">
+  <img src="docs/menu.png" alt="The relup main menu: check for updates, update one or all programs, list, add, edit, uninstall, settings" width="720">
+</p>
+
+After each job, `relup` waits so you can read the output, then lets you return to the menu (Enter) or quit (`q`).
+
 ## Commands
 
 | Command | What it does |
@@ -64,6 +72,18 @@ You then pick a release, your CPU architecture and (only if the release has seve
 | `relup --help`, `relup --version` | Help and version |
 
 Add `-y` / `--yes` to answer yes to ordinary confirmation prompts. Uninstalling always asks.
+
+### Checking for updates
+
+`relup check` (or option 1 in the menu) compares what you have installed with the latest release of every tracked program:
+
+<p align="center">
+  <img src="docs/check.png" alt="relup check output: a table of tracked programs with installed version, latest version, release date, install date and status" width="720">
+</p>
+
+- **RELEASED** is the date the latest release was published on GitHub.
+- **INSTALLED ON** is when the package was installed or last upgraded.
+- Build suffixes are ignored when comparing, so `1.19.0+65` installed counts as up to date against a `1.19.0` release (as with `localsend` above).
 
 ## Configuration
 
