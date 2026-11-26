@@ -6,7 +6,7 @@ An interactive Bash tool that keeps programs you installed by hand up to date, s
 
 If you download `.rpm` packages from GitHub release pages instead of using a package repository, `relup` remembers where each one came from, tells you when a newer release exists, and updates one program or all of them in a single step.
 
-> **Status:** early development (v0.2.0). It currently installs **`.rpm` packages via `dnf`** (Fedora, RHEL and relatives). Other install types and sources are planned, see the [roadmap](#roadmap).
+> **Status:** early development (v0.2.1). It currently installs **`.rpm` packages via `dnf`** (Fedora, RHEL and relatives). Other install types and sources are planned, see the [roadmap](#roadmap).
 
 ## Features
 
@@ -71,7 +71,7 @@ After each job, `relup` waits so you can read the output, then lets you return t
 | `relup config` | Edit `relup`'s own settings |
 | `relup --help`, `relup --version` | Help and version |
 
-Add `-y` / `--yes` to answer yes to ordinary confirmation prompts. Uninstalling always asks.
+Add `-y` / `--yes` to answer yes to ordinary confirmation prompts. Uninstalling, replacing a config and installing a download that has no published checksum always ask, even with `-y`. For a program you trust that publishes no checksum, set `VERIFY_CHECKSUM='skip'` in its config to update it unattended.
 
 ### Checking for updates
 
@@ -133,7 +133,7 @@ Rules: one `KEY='value'` per line, `#` comments on their own line, no inline com
 
 ## How a release is chosen
 
-For each program, `relup` reads the repository's recent releases (skipping drafts and prereleases), keeps those whose tag starts with `TAG_PREFIX`, and takes the newest one that has a file matching `ASSET_REGEX`. The version is the tag with the prefix (and a leading `v`) removed, and it is compared with the version `rpm` reports for `PKG`. Build metadata after a `+` (for example `1.19.0+65`) is ignored in the comparison, and an installed version that is newer than the latest release is never "updated" backwards. After each install, `relup` re-checks the installed version, so a package manager that quietly does nothing is reported as a failure.
+For each program, `relup` reads the repository's recent releases, up to 300 (skipping drafts and prereleases), keeps those whose tag starts with `TAG_PREFIX`, and takes the newest one that has a file matching `ASSET_REGEX`. The version is the tag with the prefix (and a leading `v`) removed, and it is compared with the version `rpm` reports for `PKG`. Build metadata after a `+` (for example `1.19.0+65`) is ignored in the comparison, and an installed version that is newer than the latest release is never "updated" backwards. After each install, `relup` re-checks the installed version, so a package manager that quietly does nothing is reported as a failure.
 
 ## Checksums
 
@@ -142,7 +142,7 @@ Before installing, `relup` tries to verify the download, in this order:
 1. The SHA-256 digest GitHub lists for the file in the release.
 2. A checksum file attached to the same release (`<file>.sha256`, `SHA256SUMS`, `checksums.txt` and similar).
 
-If the checksum does not match, the file is **not** installed. If the release publishes no checksum, `relup` warns and asks before installing (`VERIFY_CHECKSUM='auto'`), refuses (`required`), or skips the check (`skip`).
+If the checksum does not match, the file is **not** installed. If the release publishes no checksum, `relup` warns and asks before installing (`VERIFY_CHECKSUM='auto'`, and `-y` does not answer for you), refuses (`required`), or skips the check (`skip`). Checksum files larger than 2 MB are ignored.
 
 Note that the checksum comes from the same release as the download. It catches corrupted or swapped files, but it cannot detect a release that was compromised at the source. `relup` does not verify GPG signatures.
 

@@ -20,7 +20,7 @@
 set -euo pipefail
 
 TOOL_NAME="relup"
-TOOL_VERSION="0.2.0"
+TOOL_VERSION="0.2.1"
 
 CONF_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/${TOOL_NAME}"
 APPS_DIR="${CONF_ROOT}/apps.d"
@@ -146,6 +146,13 @@ EOF
 
 init_config() {
     mkdir -p "$APPS_DIR"
+    local f
+    shopt -s nullglob
+    for f in "$APPS_DIR"/*.conf; do
+        [[ $(basename "$f" .conf) =~ ^[A-Za-z0-9._-]+$ ]] \
+            || warn "Ignoring ${f}: program file names may only use letters, digits, '.', '-' and '_'."
+    done
+    shopt -u nullglob
     [[ -f $SETTINGS_FILE ]] || write_default_settings
     parse_conf "$SETTINGS_FILE" "DOWNLOAD_DIR"
 }
@@ -182,9 +189,12 @@ parse_conf() {  # parse_conf <file> "<ALLOWED KEYS>"
 APP_KEYS="NAME SOURCE REPO TAG_PREFIX ASSET_REGEX INSTALL PKG VERIFY_CHECKSUM"
 
 list_app_ids() {
-    local f
+    local f id
     shopt -s nullglob
-    for f in "$APPS_DIR"/*.conf; do basename "$f" .conf; done
+    for f in "$APPS_DIR"/*.conf; do
+        id=$(basename "$f" .conf)
+        if [[ $id =~ ^[A-Za-z0-9._-]+$ ]]; then printf '%s\n' "$id"; fi
+    done
     shopt -u nullglob
 }
 
@@ -235,9 +245,10 @@ gh_api() {  # gh_api <path> -> prints JSON body
 
 # Prints normalized releases: [{tag, draft, prerelease, date, assets:[{name,url,size,digest}]}]
 # Other sources (e.g. GitLab) can be added later by providing <source>_releases with the same output.
-github_releases() {  # github_releases <owner/repo>
-    local json
-    json=$(gh_api "repos/$1/releases?per_page=100") || return 1
+github_releases() {  # github_releases <owner/repo> [page]
+    local json page=${2:-1} query="per_page=100"
+    if ((page > 1)); then query+="&page=${page}"; fi
+    json=$(gh_api "repos/$1/releases?${query}") || return 1
     jq -c '[ .[] | {
                 tag: .tag_name,
                 draft: (.draft // false),
@@ -250,33 +261,37 @@ github_releases() {  # github_releases <owner/repo>
                     digest: (.digest // "") } ] } ]' <<< "$json"
 }
 
-get_releases() { "${SOURCE}_releases" "$1"; }
+get_releases() { "${SOURCE}_releases" "$@"; }
 
 # Sets LATEST_* for the loaded app. Prints the matching release as JSON.
 find_latest() {
-    local releases result
-    releases=$(get_releases "$REPO") || return 1
-    result=$(jq -c --arg p "$TAG_PREFIX" --arg re "$ASSET_REGEX" '
-        [ .[]
-          | select(.draft == false and .prerelease == false)
-          | select(.tag | startswith($p))
-          | . as $rel
-          | ([ $rel.assets[] | select(.name | test($re)) ] | first) as $a
-          | select($a != null)
-          | { tag: $rel.tag,
-              version: ($rel.tag | ltrimstr($p) | ltrimstr("v")),
-              date: $rel.date,
-              asset: $a,
-              assets: $rel.assets }
-        ] | first // empty' <<< "$releases") || {
-        err "${NAME}: could not evaluate ASSET_REGEX (is it a valid regex?)"
-        return 1
-    }
-    if [[ -z $result ]]; then
-        err "${NAME}: no release found with a file matching ASSET_REGEX"
-        return 1
-    fi
-    printf '%s' "$result"
+    local releases result page count
+    # Busy repos can bury a product's newest release past page 1, so look at up to 3 pages,
+    # stopping as soon as a match is found or a page comes back short (no more releases).
+    for page in 1 2 3; do
+        releases=$(get_releases "$REPO" "$page") || return 1
+        result=$(jq -c --arg p "$TAG_PREFIX" --arg re "$ASSET_REGEX" '
+            [ .[]
+              | select(.draft == false and .prerelease == false)
+              | select(.tag | startswith($p))
+              | . as $rel
+              | ([ $rel.assets[] | select(.name | test($re)) ] | first) as $a
+              | select($a != null)
+              | { tag: $rel.tag,
+                  version: ($rel.tag | ltrimstr($p) | ltrimstr("v")),
+                  date: $rel.date,
+                  asset: $a,
+                  assets: $rel.assets }
+            ] | first // empty' <<< "$releases") || {
+            err "${NAME}: could not evaluate ASSET_REGEX (is it a valid regex?)"
+            return 1
+        }
+        if [[ -n $result ]]; then printf '%s' "$result"; return 0; fi
+        count=$(jq 'length' <<< "$releases") || count=0
+        if ((count < 100)); then break; fi
+    done
+    err "${NAME}: no release found with a file matching ASSET_REGEX"
+    return 1
 }
 
 LATEST_JSON=""; LATEST_VER=""; LATEST_TAG=""; LATEST_NAME=""; LATEST_URL=""; LATEST_DIGEST=""
@@ -339,13 +354,20 @@ remote_package_name_rpm() {  # remote_package_name_rpm <url>
     return 1
 }
 
-set_conf_value() {  # set_conf_value <file> <KEY> <value>   (value limited to A-Za-z0-9._+-)
-    local file=$1 key=$2 val=$3
-    if grep -q "^${key}=" "$file"; then
-        sed -i "s|^${key}=.*|${key}='${val}'|" "$file"
-    else
-        printf "%s='%s'\n" "$key" "$val" >> "$file"
-    fi
+set_conf_value() {  # set_conf_value <file> <KEY> <value>: rewrites that line, or appends it
+    local file=$1 key=$2 val line found=0 tmp
+    val=$(clean_value "$3")
+    tmp=$(mktemp "${file}.XXXXXX") || return 1
+    while IFS= read -r line || [[ -n $line ]]; do
+        if [[ $line == "${key}="* ]]; then
+            printf "%s='%s'\n" "$key" "$val"; found=1
+        else
+            printf '%s\n' "$line"
+        fi
+    done < "$file" > "$tmp"
+    if [[ $found -eq 0 ]]; then printf "%s='%s'\n" "$key" "$val" >> "$tmp"; fi
+    chmod --reference="$file" "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$file"
 }
 
 get_installed_version() { "installed_version_${INSTALL}"; }
@@ -442,7 +464,7 @@ print_tracked() {  # offline: no GitHub calls
 checksum_candidates() {  # prints URLs of possible checksum files, best first
     jq -r --arg n "$LATEST_NAME" '
         def bad: test("(?i)\\.(sig|asc|pem|minisig|cert|bundle|sbom)$");
-        .assets as $all
+        [ .assets[] | select(.size < 2097152) ] as $all
         | ( [ $all[] | select(.name != $n)
               | select((.name | ascii_downcase | startswith($n | ascii_downcase))
                        and (.name | test("(?i)sha|checksum|digest|\\.sum")))
@@ -481,7 +503,7 @@ verify_checksum() {  # verify_checksum <downloaded-file>
         cs="${TMP_DIR}/checksum.txt"
         while IFS= read -r url; do
             [[ -n $url ]] || continue
-            curl -fsSL "$url" -o "$cs" 2>/dev/null || continue
+            curl -fsSL --max-filesize 2097152 "$url" -o "$cs" 2>/dev/null || continue
             sidecar=0
             [[ ${url##*/} == "$LATEST_NAME"* ]] && sidecar=1
             want=$(extract_hash "$cs" "$LATEST_NAME" "$sidecar")
@@ -519,7 +541,7 @@ verify_download() {  # applies the program's VERIFY_CHECKSUM policy
                 return 1
             fi
             warn "No checksum is published for ${LATEST_NAME}; its integrity cannot be verified."
-            confirm "Install it anyway?" n
+            confirm_strict "Install it anyway?" n   # -y does not skip this; set VERIFY_CHECKSUM='skip' per program instead
             ;;
     esac
 }
@@ -681,11 +703,18 @@ regex_escape() { printf '%s' "$1" | sed -E 's/[][\\.^$*+?(){}|]/\\&/g'; }
 # Turns a concrete file name into a pattern that survives version bumps:
 #   brave-browser-1.85.118-1.x86_64.rpm -> ^brave-browser-[0-9][0-9.]*-1\.x86_64\.rpm$
 build_asset_regex() {  # build_asset_regex <asset-name> <version>
-    local name=$1 ver=$2 out=""
+    local name=$1 ver=$2 out="" head tail
+    local before_re='[0-9.]$' after_re='^([0-9]|\.[0-9])'
     if [[ -n $ver ]]; then
         while [[ $name == *"$ver"* ]]; do
-            out+="$(regex_escape "${name%%"$ver"*}")"'[0-9][0-9.]*'
-            name=${name#*"$ver"}
+            head=${name%%"$ver"*}
+            tail=${name#*"$ver"}
+            if [[ $head =~ $before_re || $tail =~ $after_re ]]; then
+                out+="$(regex_escape "${head}${ver}")"      # part of a longer number: keep it literal
+            else
+                out+="$(regex_escape "$head")"'[0-9][0-9.]*'
+            fi
+            name=$tail
         done
     fi
     out+="$(regex_escape "$name")"
@@ -948,7 +977,7 @@ first_run() {
 
 # ---------- manage ----------
 edit_file() {
-    local f=$1 ed=${VISUAL:-${EDITOR:-}}
+    local f=$1 ed=${VISUAL:-${EDITOR:-}} cmd=()
     if [[ -z $ed ]]; then
         for ed in nano vim vi; do
             if command -v "$ed" >/dev/null; then break; fi
@@ -956,8 +985,8 @@ edit_file() {
         done
     fi
     [[ -n $ed ]] || { err "No editor found. Set \$EDITOR or \$VISUAL."; return 1; }
-    # shellcheck disable=SC2086  # $ed may contain arguments, e.g. "code -w"
-    $ed "$f"
+    read -ra cmd <<< "$ed"      # the editor may carry arguments, e.g. "code -w"
+    "${cmd[@]}" "$f"
 }
 
 edit_app() {
@@ -1097,6 +1126,11 @@ main() {
         esac
     done
     set -- "${args[@]+"${args[@]}"}"
+
+    case ${1:-} in
+        help|list|check|config)  (($# <= 1)) || { err "Unexpected argument: $2"; exit 1; } ;;
+        add|edit|remove|update)  (($# <= 2)) || { err "Unexpected argument: $3"; exit 1; } ;;
+    esac
 
     check_deps
     init_config
