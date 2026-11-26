@@ -130,10 +130,13 @@ Rules: one `KEY='value'` per line, `#` comments on their own line, no inline com
 | Key | Meaning | Default |
 |---|---|---|
 | `DOWNLOAD_DIR` | Where downloads are staged before installing. A temporary subfolder is created and removed afterwards. | `/tmp` |
+| `CLEAR_SCREEN` | `yes` or `no`. Clear the screen before each menu and job. Set to `no` to keep earlier output on screen. | `yes` |
 
 ## How a release is chosen
 
-For each program, `relup` reads the repository's recent releases, up to 300 (skipping drafts and prereleases), keeps those whose tag starts with `TAG_PREFIX`, and takes the newest one that has a file matching `ASSET_REGEX`. The version is the tag with the prefix (and a leading `v`) removed, and it is compared with the version `rpm` reports for `PKG`. Build metadata after a `+` (for example `1.19.0+65`) is ignored in the comparison, and an installed version that is newer than the latest release is never "updated" backwards. After each install, `relup` re-checks the installed version, so a package manager that quietly does nothing is reported as a failure.
+For each program, `relup` reads the repository's recent releases, up to 300 (skipping drafts and prereleases), keeps those whose tag starts with `TAG_PREFIX`, and takes the newest one that has a file matching `ASSET_REGEX`. The version is the tag with the prefix (and a leading `v`) removed, and it is compared with the version `rpm` reports for `PKG`. Build metadata after a `+` (for example `1.19.0+65`) is ignored in the comparison, and an installed version that is the same or newer than the latest release counts as up to date, so nothing is ever "updated" backwards.
+
+Versions are compared number by number, the way `sort -V` does. This is not full semantic versioning: suffixes such as `-rc1` are not ranked as pre-releases, so `relup` relies on GitHub's own pre-release flag to skip those releases. If a project tags release candidates without flagging them, or uses an unusual scheme, check how it compares before trusting `relup update --all` with it. After each install, `relup` re-checks the installed version, so a package manager that quietly does nothing is reported as a failure.
 
 ## Checksums
 

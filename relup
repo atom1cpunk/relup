@@ -28,6 +28,7 @@ SETTINGS_FILE="${CONF_ROOT}/settings.conf"
 
 # Defaults; overridden by settings.conf
 DOWNLOAD_DIR="/tmp"
+CLEAR_SCREEN="yes"
 
 ASSUME_YES=0            # -y: answer yes to ordinary prompts
 SKIP_UPDATE_CONFIRM=0   # set during "update all" after the batch was confirmed once
@@ -141,6 +142,9 @@ write_default_settings() {
 # Folder where downloads are staged before installing.
 # A temporary subfolder is created here and removed afterwards.
 DOWNLOAD_DIR=/tmp
+
+# Clear the screen before each menu and job (yes or no).
+CLEAR_SCREEN=yes
 EOF
 }
 
@@ -154,7 +158,7 @@ init_config() {
     done
     shopt -u nullglob
     [[ -f $SETTINGS_FILE ]] || write_default_settings
-    parse_conf "$SETTINGS_FILE" "DOWNLOAD_DIR"
+    parse_conf "$SETTINGS_FILE" "DOWNLOAD_DIR CLEAR_SCREEN"
 }
 
 # ---------- config parsing ----------
@@ -999,7 +1003,7 @@ edit_app() {
 
 edit_settings() {
     edit_file "$SETTINGS_FILE" || return 1
-    parse_conf "$SETTINGS_FILE" "DOWNLOAD_DIR"
+    parse_conf "$SETTINGS_FILE" "DOWNLOAD_DIR CLEAR_SCREEN"
     ok "Settings reloaded."
 }
 
@@ -1052,7 +1056,10 @@ pick_app() {  # sets PICKED
 
 NOTICE=""
 
-clear_screen() { if [[ -t 1 ]]; then printf '\033[H\033[2J'; fi; }
+clear_screen() {  # honours CLEAR_SCREEN=no in the settings file
+    case ${CLEAR_SCREEN,,} in no|false|off|0) return 0 ;; esac
+    if [[ -t 1 ]]; then printf '\033[H\033[2J'; fi
+}
 
 after_job() {  # pause so the output can be read, then go back to the menu or quit
     local reply
