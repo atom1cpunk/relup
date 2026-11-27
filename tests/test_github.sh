@@ -118,6 +118,35 @@ test_token_sent_to_api_only() {
         || fail "API request without the token:\n$(cat "$MOCK_LOG")"
     ! download_requests | grep -q secret-token-123 || fail "token sent to a download host:\n$(cat "$MOCK_LOG")"
     [[ -n $(download_requests) ]] || fail "no download happened"
+    ! grep -q secret-token-123 "$MOCK_GH/argv.log" || fail "token visible on curl's command line:\n$(cat "$MOCK_GH/argv.log")"
+}
+
+test_cache_in_use_is_not_pruned() {
+    std_rpm_app tool 2.0.0
+    run cli check
+    local f
+    for f in "$XDG_CACHE_HOME"/relup/*; do touch -d '25 days ago' "$f"; done   # old, but not yet pruned
+    run cli check                      # unchanged answer (304): the entry is still in use
+    assert_line '^1 +tool +none +2\.0\.0 '
+    [[ -z $(find "$XDG_CACHE_HOME/relup" -type f -mtime +20) ]] \
+        || fail "a 304 answer did not refresh the cache entry, so it would be pruned at 30 days"
+}
+
+# Data from GitHub must never reach shell arithmetic unchecked: Bash runs $(...) found in an
+# array index inside (( )), so a crafted "size" could run code.
+test_non_numeric_size_from_github_is_harmless() {
+    local r=acme/tool
+    api_set "repos/$r/releases?per_page=100" '[{"tag_name":"v2.0.0","draft":false,"prerelease":false,
+        "published_at":"2026-11-20T00:00:00Z","assets":[{"name":"tool-2.0.0.AppImage",
+        "browser_download_url":"https://github.com/acme/tool/releases/download/v2.0.0/tool-2.0.0.AppImage",
+        "size":"HOME[$(touch '"$T"'/PWNED)]"}]}]'
+    mkdir -p "$MOCK_GH/web/github.com/acme/tool/releases/download/v2.0.0"
+    fake_elf 2 > "$MOCK_GH/web/github.com/acme/tool/releases/download/v2.0.0/tool-2.0.0.AppImage"
+    app_conf tool REPO=$r TAG_PREFIX=v 'ASSET_REGEX=^tool-.*\.AppImage$' INSTALL=binary BIN_NAME=tool VERIFY_CHECKSUM=skip
+    run cli update tool -n
+    run cli -y update tool
+    run cli add acme/tool <<< $'1\nn'
+    assert_missing "$T/PWNED"
 }
 
 test_no_token_no_auth_header() {

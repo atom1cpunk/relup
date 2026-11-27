@@ -1,3 +1,4 @@
 # The tests share globals across files (lib.sh sets them, test_*.sh reads them, relup's
 # functions read what the tests set), which shellcheck can't see when checking one file.
-disable=SC2034,SC2154,SC1091
+disable=SC2034,SC2154,SC1091,SC2016
+# SC2016: some tests pass literal "$(...)" text on purpose, as the attack being tested.

@@ -63,6 +63,8 @@ test_load_app_validation() {
     check_bad "INSTALL 'deb' is not supported" REPO=acme/tool ASSET_REGEX=x INSTALL=deb
     check_bad "INSTALL 'rpm;rm' is not supported" REPO=acme/tool ASSET_REGEX=x 'INSTALL=rpm;rm'
     check_bad "SOURCE 'gitlab' is not supported" REPO=acme/tool ASSET_REGEX=x SOURCE=gitlab
+    check_bad "SOURCE 'get' is not supported" REPO=acme/tool ASSET_REGEX=x SOURCE=get          # get_releases exists, but isn't a source
+    check_bad "INSTALL 'command_rpm' is not supported" REPO=acme/tool ASSET_REGEX=x INSTALL=command_rpm
     check_bad "VERIFY_CHECKSUM must be" REPO=acme/tool ASSET_REGEX=x VERIFY_CHECKSUM=maybe
     check_bad "PKG is missing" REPO=acme/tool ASSET_REGEX=x 'PKG=-rf'
     check_bad "DEST_DIR must be an absolute path" REPO=acme/tool ASSET_REGEX=x INSTALL=binary DEST_DIR=bin
@@ -139,6 +141,21 @@ test_extract_hash_uses_exact_file_name() {
     assert_eq "$(extract_hash "$T/bsd.txt" tool-linux-amd64 0)" "$b" "BSD style"
     printf '%s  ./dist/tool-linux-amd64.zsync\n%s  ./dist/tool-linux-amd64\n' "$a" "$b" > "$T/paths.txt"
     assert_eq "$(extract_hash "$T/paths.txt" tool-linux-amd64 0)" "$b" "with a folder in front"
+}
+
+test_parse_latest_size_must_be_digits() {
+    load_relup
+    parse_latest '{"version":"1","tag":"v1","date":"","asset":{"name":"a","url":"u","digest":"","size":"HOME[$(touch PWNED)]"}}'
+    assert_eq "$LATEST_SIZE" 0 "LATEST_SIZE"
+    assert_eq "$(fmt_size 'HOME[$(touch PWNED2)]')" "0 KB" "fmt_size"
+    assert_missing "$T/PWNED"
+    assert_missing "$T/PWNED2"
+}
+
+test_sidecar_for_another_file_is_ignored() {
+    load_relup
+    printf '%s  mytool.tar.gz\n' "$(printf 'a%.0s' {1..64})" > "$T/mytool.tar.gz.sha256"
+    assert_eq "$(extract_hash "$T/mytool.tar.gz.sha256" mytool 1)" "" "hash from a sidecar naming another file"
 }
 
 test_set_conf_value() {

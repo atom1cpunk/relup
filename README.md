@@ -177,7 +177,7 @@ VERIFY_CHECKSUM='auto'
 | `TAG_PREFIX` | Only releases whose tag starts with this are considered. Separates products in shared repos (`auth-v`, `desktop-v`). May be empty. |
 | `ASSET_REGEX` | Regular expression the release file name must match |
 | `INSTALL` | How the file is installed: `rpm` (system package, via `dnf`) or `binary` (a single file copied into a folder) |
-| `PKG` | Package name as known to `rpm` (check with `rpm -q <name>`). It can differ from the release file's name (e.g. `LocalSend-….rpm` contains the package `localsend_app`); `relup` checks the downloaded file and offers to correct it. |
+| `PKG` | Package name as known to `rpm` (check with `rpm -q <name>`). It can differ from the release file's name (e.g. `LocalSend-….rpm` contains the package `localsend_app`); `relup` reads the real name from the downloaded file and corrects the config automatically, telling you when it does. |
 | `BIN_NAME` | `binary` only. Name of the installed command (default: the program's id) |
 | `DEST_DIR` | `binary` only, optional. Absolute path of the folder to install into, instead of `BIN_DIR` from the settings |
 | `VERIFY_CHECKSUM` | `auto`, `required` or `skip` (see below) |
@@ -227,7 +227,7 @@ Without authentication, GitHub allows 60 API requests per hour, and each program
    export GITHUB_TOKEN=ghp_your_token_here
    ```
 
-2. If you use the GitHub CLI, set `USE_GH_AUTH=yes` in `settings.conf` to reuse its login (`gh auth login`), so there is no token to manage. The token is only ever sent to `api.github.com`. `GITHUB_TOKEN` wins if both are set.
+2. If you use the GitHub CLI, set `USE_GH_AUTH=yes` in `settings.conf` to reuse its login (`gh auth login`), so there is no token to manage. The token is only ever sent to `api.github.com`, and is handed to `curl` on its standard input, so it never appears in the process list. `GITHUB_TOKEN` wins if both are set.
 
 If you do run out of requests, `relup` falls back to the last saved answer and tells you so, instead of failing. Set `CACHE=no` to turn the cache off; it is always safe to delete `~/.cache/relup/`. Never commit a token to a repository.
 
@@ -239,7 +239,7 @@ tests/run.sh checksum      # only tests whose name contains "checksum"
 tests/run.sh -v            # also show the output of passing tests
 ```
 
-The tests need only `bash`, `jq` and coreutils. They use the real `jq` but replace `curl`, `rpm` and `sudo` with small fakes (in `tests/mocks/`): a pretend GitHub served from files, a pretend rpm database, and a `sudo dnf` that only updates that database. Each test runs in its own temporary home folder, so your real configuration, installed programs and the network are never touched.
+The tests need only `bash`, `jq` and coreutils. They use the real `jq` but replace `curl`, `rpm` and `sudo` with small fakes (in `tests/mocks/`): a pretend GitHub served from files, a pretend rpm database, and a `sudo dnf` that only updates that database. Each test runs in its own temporary home folder, so your real configuration, installed programs and the network are never touched. GitHub runs the same checks (syntax, `shellcheck` and the tests) on every push and pull request.
 
 ## Roadmap
 

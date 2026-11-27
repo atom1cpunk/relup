@@ -82,6 +82,22 @@ test_binary_dest_dir_not_writable_uses_sudo() {
     assert_contains "is not in your PATH"
 }
 
+test_binary_checksum_skips_sidecar_of_archive() {
+    local r=acme/mytool bin tgz
+    bin=$(fake_elf 1.0); tgz="archive bytes"
+    set_releases $r "$(mk_release v1.0.0 \
+        "$(mk_asset $r v1.0.0 mytool "$bin" none)" \
+        "$(mk_asset $r v1.0.0 mytool.tar.gz "$tgz" none)" \
+        "$(mk_asset $r v1.0.0 mytool.tar.gz.sha256 "$(sha_of "$tgz")  mytool.tar.gz" none)" \
+        "$(mk_asset $r v1.0.0 SHA256SUMS "$(sha_of "$tgz")  mytool.tar.gz
+$(sha_of "$bin")  mytool" none)")"
+    app_conf mytool REPO=$r TAG_PREFIX=v 'ASSET_REGEX=^mytool$' INSTALL=binary BIN_NAME=mytool
+    run cli -y update mytool
+    assert_status 0
+    assert_contains "Checksum OK (sha256, from SHA256SUMS)"
+    assert_eq "$(cat "$BIN/mytool")" "$bin" "installed file"
+}
+
 test_binary_remove() {
     std_bin_app cli 1.2.0
     run cli -y update cli

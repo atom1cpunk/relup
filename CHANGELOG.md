@@ -17,6 +17,12 @@ All notable changes to `relup` are listed here. The format follows [Keep a Chang
 - Automated tests (`tests/run.sh`), using the real `jq` with fake `curl`, `rpm` and `sudo`.
 
 ### Fixed
+- **Security:** a file size in GitHub's answer (or in the local cache) was used in shell arithmetic without checking that it is a number, and Bash can run commands hidden in such a value. Sizes are now checked to be digits before use.
+- **Security:** the GitHub token was passed to `curl` on its command line, where other users on the same computer can see it (for example with `ps`). It is now passed on `curl`'s standard input.
+- A one-line checksum file for another file (for example `tool.tar.gz.sha256` next to `tool`) was used for the wrong file and caused a false checksum mismatch. Such files are now skipped and the next checksum source is tried.
+- A program config whose `SOURCE` or `INSTALL` happened to name an internal function (for example `SOURCE='get'`) passed validation and made `relup check` hang. Only the real values (`github`; `rpm`, `binary`) are accepted.
+- Without `-y` and with no input, `relup update` and `update --all` printed "Skipped" and exited successfully, so a cron job without `-y` silently did nothing. They now fail with a message suggesting `-y`.
+- Cache entries in use were deleted every 30 days, because an unchanged (304) answer didn't refresh their age.
 - A checksum list that names several similar files (for example `tool-linux-amd64` and `tool-linux-amd64.tar.gz`) could give the hash of the wrong file, so a good download was refused as a checksum mismatch. The line for exactly that file name is now used (also in BSD style and with a folder in front of the name).
 - The wizard missed AppImages whose name doesn't say "linux" (e.g. `zen-x86_64.AppImage`) when another file did (e.g. `linux.mar`), and offered unknown formats such as Firefox-style `.mar` update packages as programs. AppImages now always count as Linux files, and only files with no extension or a program extension (`.AppImage`, `.sh`, `.run`, `.bin`, ...) are offered.
 - The program name derived from a file like `zen-x86_64.AppImage` was "Zen X86" instead of "Zen".

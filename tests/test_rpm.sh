@@ -213,8 +213,13 @@ test_update_one_unattended_unverifiable_program_fails() {
 
 test_unattended_proceed_question_counts_as_no() {
     std_rpm_app tool 2.0.0; rpm_installed tool 1.0.0
-    run cli update tool           # no -y, no input
-    assert_contains "Skipped tool."
+    run cli update tool           # no -y, no input (e.g. cron without -y)
+    assert_failed
+    assert_contains "tool: not updated (no answer to 'Proceed?'; use -y to run unattended)."
+    assert_no_sudo
+    run cli update --all
+    assert_failed
+    assert_contains "Nothing updated (no answer to 'Proceed with all?'"
     assert_no_sudo
 }
 

@@ -11,10 +11,17 @@
 # Every request is appended to $MOCK_LOG as: URL <TAB> range <TAB> header|header|...
 set -u
 
+printf '%s\n' "$*" >> "${MOCK_GH:?}/argv.log"   # the command line, as other users would see it in ps
+
 headers=() dump="" wfmt="" out="" range="" maxsize="" fail=0 url=""
 while (($#)); do
     case $1 in
-        -H) headers+=("$2"); shift ;;
+        -H) if [[ $2 == @- ]]; then          # headers read from stdin, one per line (curl 7.55+)
+                while IFS= read -r h; do [[ -n $h ]] && headers+=("$h"); done
+            else
+                headers+=("$2")
+            fi
+            shift ;;
         -D) dump=$2; shift ;;
         -w) wfmt=$2; shift ;;
         -o) out=$2; shift ;;

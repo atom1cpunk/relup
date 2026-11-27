@@ -59,6 +59,13 @@ test_list_works_offline() {
     [[ ! -s $MOCK_LOG ]] || fail "list contacted the network:\n$(cat "$MOCK_LOG")"
 }
 
+test_config_naming_a_helper_function_does_not_hang() {
+    app_conf x REPO=acme/x 'ASSET_REGEX=x' SOURCE=get
+    status=0; output=$(timeout 10 bash "$RELUP" check 2>&1) || status=$?
+    [[ $status -ne 124 ]] || fail "relup check hung"
+    assert_contains "SOURCE 'get' is not supported"
+}
+
 test_list_flags_broken_config() {
     app_conf broken REPO=nonsense
     run cli list

@@ -40,6 +40,7 @@ API_TOKEN=""
 DRY_RUN=0
 
 ASSUME_YES=0            # -y: answer yes to ordinary prompts
+NO_INPUT=0              # set when a question found no input to read (unattended run)
 SKIP_UPDATE_CONFIRM=0   # set during "update all" after the batch was confirmed once
 TMP_DIR=""
 
@@ -148,6 +149,7 @@ _confirm() {  # _confirm <message> <default y|n>
     if ! read -r reply; then
         echo >&2
         warn "No answer (no input); taking that as no."
+        NO_INPUT=1
         return 1
     fi
     reply=${reply:-$2}
@@ -313,6 +315,10 @@ parse_conf() {  # parse_conf <file> "<ALLOWED KEYS>"
 }
 
 # ---------- tracked programs ----------
+# Plug-ins: an install method <m> provides install_<m>, uninstall_<m>, ... and a release source <s>
+# provides <s>_releases. Only names listed here are accepted from a program's config.
+INSTALL_METHODS="rpm binary"
+RELEASE_SOURCES="github"
 APP_KEYS="NAME SOURCE REPO TAG_PREFIX ASSET_REGEX INSTALL PKG VERIFY_CHECKSUM BIN_NAME DEST_DIR"
 
 list_app_ids() {
@@ -341,9 +347,8 @@ load_app() {
     [[ $REPO =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]      || bad="REPO must look like owner/repo"
     [[ -n $ASSET_REGEX ]]                                 || bad="ASSET_REGEX is empty"
     [[ $PKG =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]          || bad="PKG is missing or has invalid characters"
-    [[ $INSTALL =~ ^[a-z0-9_]+$ ]] && declare -F "install_${INSTALL}" >/dev/null \
-                                                          || bad="INSTALL '${INSTALL}' is not supported"
-    declare -F "${SOURCE}_releases" >/dev/null 2>&1       || bad="SOURCE '${SOURCE}' is not supported"
+    [[ " $INSTALL_METHODS " == *" $INSTALL "* ]]          || bad="INSTALL '${INSTALL}' is not supported (use: ${INSTALL_METHODS})"
+    [[ " $RELEASE_SOURCES " == *" $SOURCE "* ]]           || bad="SOURCE '${SOURCE}' is not supported (use: ${RELEASE_SOURCES})"
     [[ $VERIFY_CHECKSUM =~ ^(auto|required|skip)$ ]]      || bad="VERIFY_CHECKSUM must be auto, required or skip"
     if [[ $INSTALL == binary ]]; then
         [[ $BIN_NAME =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]  || bad="BIN_NAME is missing or has invalid characters"
@@ -374,7 +379,9 @@ cache_store() {  # cache_store <body-file> <etag-file> <body> <etag>; best effor
 # logged in (GITHUB_TOKEN or USE_GH_AUTH). Out of quota, the last saved answer is used.
 gh_api() {  # gh_api <path> -> prints the JSON body
     local path=$1 out code hdrf key cfile="" efile="" etag="" rc=0 cached=0 cond=() auth=()
-    if [[ -n $API_TOKEN ]]; then auth=(-H "Authorization: Bearer ${API_TOKEN}"); fi
+    # The token is handed to curl on stdin ("-H @-"): command-line arguments are visible to every
+    # user on the machine (ps, /proc), stdin is not.
+    if [[ -n $API_TOKEN ]]; then auth=(-H @-); fi
     if cache_enabled; then
         key=$(printf '%s' "$path" | sha256sum | cut -c1-40)
         cfile="${CACHE_DIR}/${key}.json"; efile="${CACHE_DIR}/${key}.etag"
@@ -385,7 +392,7 @@ gh_api() {  # gh_api <path> -> prints the JSON body
     fi
     hdrf=$(mktemp "${TMPDIR:-/tmp}/${TOOL_NAME}-hdr.XXXXXX") || hdrf=/dev/null
     out=$(curl -sSL "${auth[@]}" "${cond[@]}" -D "$hdrf" -H 'Accept: application/vnd.github+json' \
-               -w $'\n%{http_code}' "https://api.github.com/${path}") || {
+               -w $'\n%{http_code}' "https://api.github.com/${path}" <<< "Authorization: Bearer ${API_TOKEN}") || {
         if [[ $hdrf != /dev/null ]]; then rm -f "$hdrf"; fi
         err "Could not reach GitHub (network problem?)"
         return 1
@@ -400,7 +407,7 @@ gh_api() {  # gh_api <path> -> prints the JSON body
                 if [[ -n $etag ]]; then cache_store "$cfile" "$efile" "$out" "$etag"; fi
             fi ;;
         304)
-            if [[ $cached -eq 1 ]]; then cat "$cfile"; else err "Unexpected 'not modified' reply from GitHub."; rc=1; fi ;;
+            if [[ $cached -eq 1 ]]; then cat "$cfile"; touch "$cfile" "$efile" 2>/dev/null || true; else err "Unexpected 'not modified' reply from GitHub."; rc=1; fi ;;
         403|429)
             if [[ $cached -eq 1 ]]; then
                 warn "GitHub's API limit was reached; using the last saved data for ${path%%\?*}."
@@ -430,7 +437,7 @@ github_releases() {  # github_releases <owner/repo> [page]
                 assets: [ .assets[] | {
                     name: .name,
                     url: .browser_download_url,
-                    size: (.size // 0),
+                    size: (.size | if type == "number" and . >= 0 then floor else 0 end),
                     digest: (.digest // "") } ] } ]' <<< "$json"
 }
 
@@ -475,6 +482,8 @@ parse_latest() {
     mapfile -t f < <(jq -r '.version, .tag, .asset.name, .asset.url, .asset.digest, .date, .asset.size' <<< "$1")
     LATEST_VER=${f[0]}; LATEST_TAG=${f[1]}; LATEST_NAME=${f[2]##*/}; LATEST_URL=${f[3]}
     LATEST_DIGEST=${f[4]:-}; d=${f[5]:-}; LATEST_DATE=${d:0:10}; LATEST_SIZE=${f[6]:-0}
+    # Bash runs code hidden in a non-number used in (( )), so data from GitHub must be digits.
+    [[ $LATEST_SIZE =~ ^[0-9]{1,15}$ ]] || LATEST_SIZE=0
 }
 
 # ---------- install methods ----------
@@ -744,7 +753,7 @@ checksum_candidates() {  # prints URLs of possible checksum files, best first
 }
 
 extract_hash() {  # extract_hash <checksum-file> <asset-name> <is-sidecar 0|1>
-    local cs=$1 name=$2 sidecar=$3 line="" lines
+    local cs=$1 name=$2 sidecar=$3 line="" lines fields=()
     # Use the line that names exactly this file, not the first one that merely contains its name
     # (tool-linux-amd64 vs tool-linux-amd64.tar.gz). Understands "hash  name", "hash *name",
     # "hash  ./dir/name" and the BSD style "SHA256 (name) = hash".
@@ -755,7 +764,12 @@ extract_hash() {  # extract_hash <checksum-file> <asset-name> <is-sidecar 0|1>
                } }' "$cs" 2>/dev/null || true)
     if [[ -z $line && $sidecar -eq 1 ]]; then
         lines=$(grep -c . "$cs" 2>/dev/null || true)
-        if [[ ${lines:-0} -eq 1 ]]; then line=$(grep . "$cs" | head -n1); fi
+        if [[ ${lines:-0} -eq 1 ]]; then
+            line=$(grep . "$cs" | head -n1)
+            # "hash  other-file" is about that other file (e.g. tool.tar.gz.sha256 for tool): skip it
+            read -ra fields <<< "$line"
+            ((${#fields[@]} == 1)) || line=""
+        fi
     fi
     [[ -n $line ]] || return 0
     grep -Eo '\b([0-9a-fA-F]{128}|[0-9a-fA-F]{64})\b' <<< "$line" | head -n1 || true
@@ -825,6 +839,7 @@ verify_download() {  # applies the program's VERIFY_CHECKSUM policy
 BAR_WIDTH=30
 
 fmt_size() {  # bytes -> "NNN KB" or "NNN MB"
+    if [[ ! $1 =~ ^[0-9]{1,15}$ ]]; then set -- 0; fi   # never let a non-number reach (( ))
     if (($1 >= 1048576)); then printf '%d MB' "$(($1 / 1048576))"; else printf '%d KB' "$((($1 + 1023) / 1024))"; fi
 }
 
@@ -840,6 +855,7 @@ draw_bar() {  # draw_bar <bytes-so-far> <total-bytes>
 
 download_file() {  # download_file <url> <dest> [expected-bytes]; draws a bar when run in a terminal
     local url=$1 dest=$2 total=${3:-0} pid rc=0 got
+    [[ $total =~ ^[0-9]{1,15}$ ]] || total=0
     if [[ ! -t 2 || $total -le 0 ]]; then
         curl -fsSL "$url" -o "$dest"
         return
@@ -940,7 +956,10 @@ update_app() {
     info "${C_BLD}${NAME}${C_RST}: ${from} -> ${LATEST_VER}${LATEST_DATE:+  (released ${LATEST_DATE})}"
     if [[ $DRY_RUN -eq 1 ]]; then describe_plan "$installed"; return 0; fi
     if [[ $SKIP_UPDATE_CONFIRM -eq 0 ]]; then
-        confirm "Proceed?" n || { info "Skipped ${id}."; return 0; }
+        if ! confirm "Proceed?" n; then
+            if ((NO_INPUT)); then err "${id}: not updated (no answer to 'Proceed?'; use -y to run unattended)."; return 1; fi
+            info "Skipped ${id}."; return 0
+        fi
     fi
 
     mkdir -p "$DOWNLOAD_DIR"
@@ -975,7 +994,10 @@ update_all() {
     fi
     info
     info "Will update: ${todo[*]}"
-    if [[ $DRY_RUN -eq 0 ]]; then confirm "Proceed with all?" n || return 0; fi
+    if [[ $DRY_RUN -eq 0 ]] && ! confirm "Proceed with all?" n; then
+        if ((NO_INPUT)); then err "Nothing updated (no answer to 'Proceed with all?'; use -y to run unattended)."; return 1; fi
+        return 0
+    fi
     SKIP_UPDATE_CONFIRM=1
     for id in "${todo[@]}"; do
         update_app "$id" || failed+=("$id")
