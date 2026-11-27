@@ -50,12 +50,16 @@ On first run, `relup` offers to add your first program. For example, enter:
 https://github.com/brave/brave-browser/releases
 ```
 
+<p align="center">
+  <img src="docs/add-program.png" alt="The first step of adding a program: relup asks for a GitHub URL, owner/repo or username, with b for the menu and q to quit" width="720">
+</p>
+
 Every question shows its default in brackets (press Enter to accept it), and you can type `q` at any question to cancel (in the menu: `b` to go back to the menu, `q` to quit). You then pick a release and, when the release has both an `.rpm` and an AppImage or executable, which kind you want. After that come your CPU architecture (only if the file names mention one) and the file to track (only if several match). `relup` reads the package name from the file's header, checks whether you already have the program installed, shows a short summary and asks once before saving. If the program isn't installed yet, it offers to install it.
 
 Once you are tracking programs, running `relup` opens the main menu:
 
 <p align="center">
-  <img src="docs/menu.png" alt="The relup main menu: check for updates, update one or all programs, list, add, edit, uninstall, settings" width="720">
+  <img src="docs/main-menu.png" alt="The relup 0.3.0 main menu: check for updates, update one or all programs, list, add, edit, uninstall, settings, quit" width="720">
 </p>
 
 Every question in the menu, including yes/no questions, also accepts `b` to drop what you are doing and go straight back to the menu, and `q` to quit `relup`. The hint is shown next to each question. After each job, `relup` waits so you can read the output, then lets you return to the menu (Enter) or quit (`q`).
@@ -82,12 +86,20 @@ Add `-y` / `--yes` to answer yes to ordinary confirmation prompts. Uninstalling,
 
 When there is no input to answer a question (for example `relup -y update --all` run from cron), the answer counts as **no**. `relup` skips that program, carries on with the others, and exits with an error status so the skipped program doesn't go unnoticed.
 
+### Listing tracked programs
+
+`relup list` (or option 4 in the menu) shows every program you track, where it comes from, and the installed version and date. It works offline. Options 6 and 7 show the same list and then ask which program to edit or uninstall:
+
+<p align="center">
+  <img src="docs/list-installed.png" alt="The list of tracked programs with id, name, GitHub repository, installed version and install date, followed by the question which program to pick" width="720">
+</p>
+
 ### Checking for updates
 
 `relup check` (or option 1 in the menu) compares what you have installed with the latest release of every tracked program:
 
 <p align="center">
-  <img src="docs/check.png" alt="relup check output: a table of tracked programs with installed version, latest version, release date, install date and status" width="720">
+  <img src="docs/check-for-updates.png" alt="relup check output: a table of tracked programs with installed version, latest version, release date, install date and status, all up to date" width="720">
 </p>
 
 - **RELEASED** is the date the latest release was published on GitHub.
