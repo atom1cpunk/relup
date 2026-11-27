@@ -155,3 +155,28 @@ assert_file_lacks()    { ! grep -Fq -- "$2" "$1" 2>/dev/null || fail "$1 should 
 assert_exists()   { [[ -e $1 ]] || fail "missing: $1"; }
 assert_missing()  { [[ ! -e $1 ]] || fail "should not exist: $1"; }
 assert_no_sudo()  { [[ ! -s $MOCK_SUDO_LOG ]] || fail "sudo should not have run, but ran:\n$(cat "$MOCK_SUDO_LOG")"; }
+
+# run_tty <command...>: like run, but inside a pseudo-terminal, for output that only appears in a
+# terminal (progress lines, colours). Needs python3; tests call skip_without_python first.
+run_tty() {
+    status=0
+    output=$(python3 -I -c '
+import os, pty, sys
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[1], sys.argv[1:])
+out = b""
+while True:
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    out += chunk
+_, st = os.waitpid(pid, 0)
+sys.stdout.write(out.decode("utf-8", "replace"))
+sys.exit(os.waitstatus_to_exitcode(st))
+' "$@") || status=$?
+}
+skip_without_python() { command -v python3 >/dev/null || { echo "skipped: python3 not installed"; exit 0; }; }

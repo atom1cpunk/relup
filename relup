@@ -51,8 +51,23 @@ else
 fi
 info() { printf '%s\n' "$*"; }
 ok()   { printf '%s%s%s\n' "$C_GRN" "$*" "$C_RST"; }
-warn() { printf '%s%s%s\n' "$C_YEL" "$*" "$C_RST" >&2; }
-err()  { printf '%s%s%s\n' "$C_RED" "$*" "$C_RST" >&2; }
+warn() { progress_done; printf '%s%s%s\n' "$C_YEL" "$*" "$C_RST" >&2; }
+err()  { progress_done; printf '%s%s%s\n' "$C_RED" "$*" "$C_RST" >&2; }
+
+# A status line for slow steps ("Checking for updates 2/5: brave..."), rewritten in place and
+# removed when done. Only in a terminal, so scripts and logs get clean output.
+PROGRESS_SHOWN=0
+progress() {  # progress <text>
+    [[ -t 2 ]] || return 0
+    local text=$*
+    if ((${#text} > 70)); then text="${text:0:67}..."; fi
+    printf '\r\e[K%s' "$text" >&2
+    PROGRESS_SHOWN=1
+}
+progress_done() {
+    if ((PROGRESS_SHOWN)); then printf '\r\e[K' >&2; PROGRESS_SHOWN=0; fi
+    return 0
+}
 
 usage() {
     cat <<EOF
@@ -107,6 +122,10 @@ EOF
 }
 
 # ---------- prompts ----------
+# In the interactive menu every question also accepts "b" (back to the main menu: the current job
+# is dropped) and "q" (quit). Outside the menu, questions with a list of choices accept "q" to cancel.
+IN_MENU=0
+BACK_TO_MENU=0
 ANSWER=""
 ask() {  # ask <prompt> [default]  -> sets ANSWER; Ctrl-D exits cleanly
     local prompt=$1 default=${2:-}
@@ -120,9 +139,10 @@ ask() {  # ask <prompt> [default]  -> sets ANSWER; Ctrl-D exits cleanly
 }
 
 _confirm() {  # _confirm <message> <default y|n>
-    local reply hint="[y/N]"
-    [[ $2 == y ]] && hint="[Y/n]"
-    printf '%s %s ' "$1" "$hint" >&2
+    local reply hint="[y/N"
+    [[ $2 == y ]] && hint="[Y/n"
+    if ((IN_MENU)); then hint+=", b = menu, q = quit"; fi
+    printf '%s %s] ' "$1" "$hint" >&2
     # No input (Ctrl-D, or an unattended run with nothing on stdin) counts as "no". Exiting here
     # instead would end "update --all" halfway through and still report success.
     if ! read -r reply; then
@@ -131,7 +151,30 @@ _confirm() {  # _confirm <message> <default y|n>
         return 1
     fi
     reply=${reply:-$2}
+    if ((IN_MENU)); then
+        case ${reply,,} in
+            q|quit) exit 0 ;;
+            b|back) BACK_TO_MENU=1; return 1 ;;
+        esac
+    fi
     [[ $reply =~ ^[Yy] ]]
+}
+
+ask_choice() {  # ask_choice <prompt> [default]: returns 1 when the user backs out (q, or b in the menu)
+    if ((IN_MENU)); then ask "$1 (b = menu, q = quit)" "${2:-}"; else ask "$1 (q to cancel)" "${2:-}"; fi
+    case ${ANSWER,,} in
+        q|quit) if ((IN_MENU)); then exit 0; fi; info "Cancelled."; return 1 ;;
+        b|back) if ((IN_MENU)); then BACK_TO_MENU=1; return 1; fi ;;
+    esac
+    return 0
+}
+
+ask_number() {  # ask_number <prompt> <max> [default]: asks again until 1..max, or the user backs out
+    while true; do
+        ask_choice "$1" "${3:-}" || return 1
+        if [[ $ANSWER =~ ^[0-9]+$ ]] && ((ANSWER >= 1 && ANSWER <= $2)); then return 0; fi
+        warn "Please enter a number from 1 to $2."
+    done
 }
 confirm() {  # honours -y
     if [[ $ASSUME_YES -eq 1 ]]; then return 0; fi
@@ -637,8 +680,14 @@ refresh_status() {
 }
 
 refresh_all() {
-    local id
-    for id in $(list_app_ids); do refresh_status "$id"; done
+    local id ids=() n=0
+    mapfile -t ids < <(list_app_ids)
+    for id in "${ids[@]}"; do
+        n=$((n + 1))
+        progress "Checking for updates ${n}/${#ids[@]}: ${id}..."
+        refresh_status "$id"
+    done
+    progress_done
     STATUS_FRESH=1
 }
 
@@ -930,6 +979,7 @@ update_all() {
     SKIP_UPDATE_CONFIRM=1
     for id in "${todo[@]}"; do
         update_app "$id" || failed+=("$id")
+        if ((BACK_TO_MENU)); then SKIP_UPDATE_CONFIRM=0; return 0; fi
     done
     SKIP_UPDATE_CONFIRM=0
     if ((${#failed[@]})); then
@@ -995,24 +1045,11 @@ parse_repo_input() {  # sets W_REPO / W_TAG, or W_USER when only a username was 
     return 0
 }
 
-# Wizard questions show "q to cancel"; q leaves the wizard (returns 1) from any question.
-wizard_ask() {  # wizard_ask <prompt> [default]
-    ask "$1 (q to cancel)" "${2:-}"
-    if [[ $ANSWER =~ ^[Qq]$ ]]; then info "Cancelled."; return 1; fi
-}
-
-wizard_pick_number() {  # wizard_pick_number <prompt> <max> [default]: asks again until 1..max, or q
-    while true; do
-        wizard_ask "$1" "${3:-}" || return 1
-        if [[ $ANSWER =~ ^[0-9]+$ ]] && ((ANSWER >= 1 && ANSWER <= $2)); then return 0; fi
-        warn "Please enter a number from 1 to $2, or q to cancel."
-    done
-}
-
 wizard_pick_user_repo() {  # sets W_REPO
     local user=$1 json rows=() row i=0 name desc shown=40
-    info "Looking up repositories of ${user}..."
+    progress "Looking up repositories of ${user}..."
     json=$(gh_api "users/${user}/repos?per_page=100&sort=pushed") || return 1
+    progress_done
     mapfile -t rows < <(jq -r '.[] | select(.archived | not)
                                | [.name, ((.description // "") | .[0:60])] | join("\t")' <<< "$json")
     ((${#rows[@]})) || { err "No public repositories found for ${user}."; return 1; }
@@ -1023,7 +1060,7 @@ wizard_pick_user_repo() {  # sets W_REPO
     done
     if ((${#rows[@]} > shown)); then info "  (showing the ${shown} most recently pushed; you can also type a repo name)"; fi
     while true; do
-        wizard_ask "Repository number or name" || return 1
+        ask_choice "Repository number or name" || return 1
         if [[ $ANSWER =~ ^[0-9]+$ ]] && ((ANSWER >= 1 && ANSWER <= i)); then
             IFS=$'\t' read -r name desc <<< "${rows[ANSWER-1]}"
             W_REPO="${user}/${name}"
@@ -1032,13 +1069,15 @@ wizard_pick_user_repo() {  # sets W_REPO
             W_REPO="${user}/${ANSWER}"
             return 0
         fi
-        warn "Please enter a number from 1 to ${i}, a repository name, or q to cancel."
+        warn "Please enter a number from 1 to ${i}, or a repository name."
     done
 }
 
 wizard_pick_release() {  # sets W_RELEASE (json) and W_TAGNAME
     local releases rows=() row t d c i=0 shown=15
+    progress "Looking up releases of ${W_REPO}..."
     releases=$(get_releases "$W_REPO") || return 1
+    progress_done
     W_RELEASE=""
     if [[ -n $W_TAG ]]; then
         W_RELEASE=$(jq -c --arg t "$W_TAG" '[.[] | select(.tag == $t)] | first // empty' <<< "$releases")
@@ -1062,7 +1101,7 @@ wizard_pick_release() {  # sets W_RELEASE (json) and W_TAGNAME
         IFS=$'\t' read -r t d c <<< "$row"
         printf '  %2d) %-34s %s  (%s %s)\n' "$i" "$t" "$d" "$c" "$([[ $c == 1 ]] && echo file || echo files)"
     done
-    wizard_pick_number "Release number" "$i" 1 || return 1
+    ask_number "Release number" "$i" 1 || return 1
     IFS=$'\t' read -r t d c <<< "${rows[ANSWER-1]}"
     W_TAGNAME=$t
     W_RELEASE=$(jq -c --arg t "$t" '[.[] | select(.tag == $t)] | first // empty' <<< "$releases")
@@ -1134,7 +1173,7 @@ wizard_pick_asset() {  # sets W_KIND, W_ASSET, W_ASSET_URL, W_ASSET_SIZE
         info "This release has two kinds of files you could install:"
         info "  1) System package (.rpm), installed with dnf"
         info "  2) Single-file program (AppImage or executable), installed to ${BIN_DIR}"
-        wizard_pick_number "Choice" 2 1 || return 1
+        ask_number "Choice" 2 1 || return 1
         if [[ $ANSWER == 2 ]]; then W_KIND=binary; else W_KIND=rpm; fi
     elif ((n_rpm > 0)); then
         W_KIND=rpm
@@ -1161,7 +1200,7 @@ wizard_pick_asset() {  # sets W_KIND, W_ASSET, W_ASSET_URL, W_ASSET_SIZE
         info "  1) ${host_label} (this machine)"
         info "  2) ${other_label}"
         info "  3) Show every matching file in the release"
-        wizard_pick_number "Choice" 3 1 || return 1
+        ask_number "Choice" 3 1 || return 1
         case $ANSWER in 2) re=$other_re ;; 3) re="" ;; *) re=$host_re ;; esac
     fi
 
@@ -1180,7 +1219,7 @@ wizard_pick_asset() {  # sets W_KIND, W_ASSET, W_ASSET_URL, W_ASSET_SIZE
             IFS=$'\t' read -r name size url <<< "$row"
             printf '  %2d) %s  (%s)\n' "$i" "$name" "$(fmt_size "$size")"
         done
-        wizard_pick_number "File number" "$i" 1 || return 1
+        ask_number "File number" "$i" 1 || return 1
         IFS=$'\t' read -r name size url <<< "${rows[ANSWER-1]}"
     fi
     W_ASSET=$name; W_ASSET_SIZE=$size; W_ASSET_URL=$url
@@ -1229,7 +1268,7 @@ add_program() {  # add_program [url|owner/repo]
     if [[ -z $input ]]; then
         info "Enter a GitHub URL, owner/repo, or just a username to browse their repos."
         info "  e.g. https://github.com/brave/brave-browser/releases"
-        wizard_ask "GitHub URL, owner/repo or username" || return 1
+        ask_choice "GitHub URL, owner/repo or username" || return 1
         input=$ANSWER
     fi
     [[ -n $input ]] || { warn "Nothing entered."; return 1; }
@@ -1377,8 +1416,7 @@ remove_app() {
     info "${C_BLD}${NAME}${C_RST} (${id}) — $("describe_target_${INSTALL}"), installed version: ${installed}"
     info "  1) Uninstall the program AND delete its ${TOOL_NAME} config"
     info "  2) Only delete the ${TOOL_NAME} config (stop tracking; program stays installed)"
-    info "  c) Cancel"
-    ask "Choice" "c"
+    ask_number "Choice" 2 || return 0
     case $ANSWER in
         1)
             if [[ $installed == none ]]; then
@@ -1395,7 +1433,6 @@ remove_app() {
             rm -f "${APPS_DIR}/${id}.conf"
             ok "No longer tracking ${id}."
             ;;
-        *) info "Cancelled."; return 0 ;;
     esac
     STATUS_FRESH=0
 }
@@ -1406,15 +1443,16 @@ pick_app() {  # sets PICKED
     local ids=() choice
     mapfile -t ids < <(list_app_ids)
     ((${#ids[@]})) || { warn "No programs tracked yet."; return 1; }
-    ask "Program number (or id)"
-    choice=$ANSWER
-    if [[ $choice =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#ids[@]})); then
-        PICKED=${ids[choice-1]}
-    elif [[ $choice =~ ^[A-Za-z0-9._-]+$ && -f "${APPS_DIR}/${choice}.conf" ]]; then
-        PICKED=$choice
-    else
-        warn "Invalid selection."; return 1
-    fi
+    while true; do
+        ask_choice "Program number (or id)" || return 1
+        choice=$ANSWER
+        if [[ $choice =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#ids[@]})); then
+            PICKED=${ids[choice-1]}; return 0
+        elif [[ $choice =~ ^[A-Za-z0-9._-]+$ && -f "${APPS_DIR}/${choice}.conf" ]]; then
+            PICKED=$choice; return 0
+        fi
+        warn "Please enter a number from 1 to ${#ids[@]}, or a program id."
+    done
 }
 
 NOTICE=""
@@ -1450,7 +1488,11 @@ print_menu() {
 
 interactive() {
     local none="No programs tracked yet. Use option 5 to add one."
-    if ! has_apps; then clear_screen; first_run; after_job; fi
+    IN_MENU=1
+    if ! has_apps; then
+        clear_screen; first_run
+        if ((BACK_TO_MENU)); then BACK_TO_MENU=0; else after_job; fi
+    fi
     while true; do
         clear_screen
         print_menu
@@ -1473,6 +1515,7 @@ interactive() {
             8) edit_settings || true ;;
             *) NOTICE="Invalid choice: ${ANSWER:-(nothing)}"; continue ;;
         esac
+        if ((BACK_TO_MENU)); then BACK_TO_MENU=0; continue; fi    # "b": straight back, no pause
         after_job
     done
 }

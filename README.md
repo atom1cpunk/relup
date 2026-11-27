@@ -50,7 +50,7 @@ On first run, `relup` offers to add your first program. For example, enter:
 https://github.com/brave/brave-browser/releases
 ```
 
-Every question shows its default in brackets (press Enter to accept it), and you can type `q` at any question to cancel. You then pick a release and, when the release has both an `.rpm` and an AppImage or executable, which kind you want. After that come your CPU architecture (only if the file names mention one) and the file to track (only if several match). `relup` reads the package name from the file's header, checks whether you already have the program installed, shows a short summary and asks once before saving. If the program isn't installed yet, it offers to install it.
+Every question shows its default in brackets (press Enter to accept it), and you can type `q` at any question to cancel (in the menu: `b` to go back to the menu, `q` to quit). You then pick a release and, when the release has both an `.rpm` and an AppImage or executable, which kind you want. After that come your CPU architecture (only if the file names mention one) and the file to track (only if several match). `relup` reads the package name from the file's header, checks whether you already have the program installed, shows a short summary and asks once before saving. If the program isn't installed yet, it offers to install it.
 
 Once you are tracking programs, running `relup` opens the main menu:
 
@@ -58,7 +58,9 @@ Once you are tracking programs, running `relup` opens the main menu:
   <img src="docs/menu.png" alt="The relup main menu: check for updates, update one or all programs, list, add, edit, uninstall, settings" width="720">
 </p>
 
-After each job, `relup` waits so you can read the output, then lets you return to the menu (Enter) or quit (`q`).
+Every question in the menu, including yes/no questions, also accepts `b` to drop what you are doing and go straight back to the menu, and `q` to quit `relup`. The hint is shown next to each question. After each job, `relup` waits so you can read the output, then lets you return to the menu (Enter) or quit (`q`).
+
+While `relup` asks GitHub about your programs (checking or updating), a status line shows which program it is on, for example `Checking for updates 2/5: brave-browser...`. It disappears when the results appear.
 
 ## Commands
 

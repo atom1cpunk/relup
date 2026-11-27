@@ -26,6 +26,8 @@ All notable changes to `relup` are listed here. The format follows [Keep a Chang
 - A new `settings.conf` has every setting commented out, so untouched settings follow the built-in defaults even if a later version changes them. Existing files keep their values; comment a line out to go back to following the default.
 - The wizard no longer asks about architecture when no file name mentions one.
 - Every wizard question shows "q to cancel", and an invalid answer asks again instead of ending the wizard.
+- In the interactive menu, every question (choosing a program, the uninstall choices, the wizard, yes/no questions) accepts `b` to go straight back to the menu and `q` to quit, and says so. Choosing a program asks again after an invalid answer. The uninstall menu's `c) Cancel` option is replaced by these.
+- Checking and updating show a live status line (`Checking for updates 2/5: brave-browser...`) instead of a blank screen while GitHub is asked about each program. It is only shown in a terminal.
 - The uninstall confirmation shows the exact command that will run.
 - `--help` documents the new options, folders and environment variables.
 

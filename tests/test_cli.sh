@@ -205,7 +205,7 @@ test_add_asks_again_after_invalid_number() {
     set_releases $r "$(mk_release v2.0.0 "$(mk_asset $r v2.0.0 tool-2.0.0.AppImage "$(fake_elf 2)")")"
     run cli add acme/tool <<< $'7\nabc\n1\ny\nn'
     assert_status 0
-    assert_contains "Please enter a number from 1 to 1, or q to cancel."
+    assert_contains "Please enter a number from 1 to 1."
     assert_exists "$APPS/tool.conf"
 }
 
