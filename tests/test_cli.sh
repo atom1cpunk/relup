@@ -161,6 +161,54 @@ test_add_chooses_single_file_over_rpm() {
     assert_eq "$(cat "$BIN/localsend")" "$(fake_elf 1.19.0)" "installed file"
 }
 
+test_add_zen_browser_finds_appimage() {
+    local r=zen-browser/desktop name args=()
+    for name in linux-aarch64.mar linux.mar macos.mar windows.mar zen-aarch64.AppImage zen-aarch64.AppImage.zsync \
+                zen-x86_64.AppImage.zsync zen.installer.exe zen.linux-x86_64.tar.xz zen.macos-universal.dmg; do
+        args+=("$(mk_asset $r 1.24.3b "$name" "other file")")
+    done
+    args+=("$(mk_asset $r 1.24.3b zen-x86_64.AppImage "$(fake_elf 1.24.3b)")")
+    set_releases $r "$(mk_release 1.24.3b "${args[@]}")"
+    # release 1, this machine's architecture, track it, don't install now
+    run cli add https://github.com/zen-browser/desktop/releases <<< $'1\n1\ny\nn'
+    assert_status 0
+    assert_not_contains "No file in that release mentions that architecture"
+    assert_not_contains ".mar"
+    assert_contains "File: zen-x86_64.AppImage"
+    assert_file_contains "$APPS/zen.conf" "ASSET_REGEX='^zen-x86_64\.AppImage\$'"
+    assert_file_contains "$APPS/zen.conf" "TAG_PREFIX=''"
+    assert_file_contains "$APPS/zen.conf" "INSTALL='binary'"
+    run cli check
+    assert_line '^1 +zen +none +1\.24\.3b .*not installed$'
+}
+
+test_add_can_be_cancelled_at_every_question() {
+    local r=acme/tool
+    set_releases $r "$(mk_release v2.0.0 \
+        "$(mk_asset $r v2.0.0 tool-2.0.0-1.x86_64.rpm "$(fake_rpm tool 2.0.0)")" \
+        "$(mk_asset $r v2.0.0 tool-2.0.0-linux-x86_64.AppImage "$(fake_elf 2)")" \
+        "$(mk_asset $r v2.0.0 tool-2.0.0-linux-arm64.AppImage "$(fake_elf 2)")")"
+    local answers
+    for answers in 'q' $'1\nq' $'1\n2\nq'; do       # release, kind, architecture
+        run cli add acme/tool <<< "$answers"
+        assert_contains "(q to cancel)"
+        assert_contains "Cancelled."
+        assert_missing "$APPS/tool.conf"
+    done
+    run cli add <<< 'q'                            # the first question too
+    assert_contains "Cancelled."
+    assert_no_sudo
+}
+
+test_add_asks_again_after_invalid_number() {
+    local r=acme/tool
+    set_releases $r "$(mk_release v2.0.0 "$(mk_asset $r v2.0.0 tool-2.0.0.AppImage "$(fake_elf 2)")")"
+    run cli add acme/tool <<< $'7\nabc\n1\ny\nn'
+    assert_status 0
+    assert_contains "Please enter a number from 1 to 1, or q to cancel."
+    assert_exists "$APPS/tool.conf"
+}
+
 test_add_without_installable_files() {
     local r=acme/src
     set_releases $r "$(mk_release v1.0.0 "$(mk_asset $r v1.0.0 src-1.0.0.tar.gz "tgz")" "$(mk_asset $r v1.0.0 src-1.0.0.zip "zip")")"

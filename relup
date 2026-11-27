@@ -963,6 +963,20 @@ parse_repo_input() {  # sets W_REPO / W_TAG, or W_USER when only a username was 
     return 0
 }
 
+# Wizard questions show "q to cancel"; q leaves the wizard (returns 1) from any question.
+wizard_ask() {  # wizard_ask <prompt> [default]
+    ask "$1 (q to cancel)" "${2:-}"
+    if [[ $ANSWER =~ ^[Qq]$ ]]; then info "Cancelled."; return 1; fi
+}
+
+wizard_pick_number() {  # wizard_pick_number <prompt> <max> [default]: asks again until 1..max, or q
+    while true; do
+        wizard_ask "$1" "${3:-}" || return 1
+        if [[ $ANSWER =~ ^[0-9]+$ ]] && ((ANSWER >= 1 && ANSWER <= $2)); then return 0; fi
+        warn "Please enter a number from 1 to $2, or q to cancel."
+    done
+}
+
 wizard_pick_user_repo() {  # sets W_REPO
     local user=$1 json rows=() row i=0 name desc shown=40
     info "Looking up repositories of ${user}..."
@@ -976,15 +990,18 @@ wizard_pick_user_repo() {  # sets W_REPO
         printf '  %2d) %-28s %s\n' "$i" "$name" "$desc"
     done
     if ((${#rows[@]} > shown)); then info "  (showing the ${shown} most recently pushed; you can also type a repo name)"; fi
-    ask "Repository number or name"
-    if [[ $ANSWER =~ ^[0-9]+$ ]] && ((ANSWER >= 1 && ANSWER <= ${#rows[@]})); then
-        IFS=$'\t' read -r name desc <<< "${rows[ANSWER-1]}"
-        W_REPO="${user}/${name}"
-    elif [[ $ANSWER =~ ^[A-Za-z0-9._-]+$ ]]; then
-        W_REPO="${user}/${ANSWER}"
-    else
-        err "Invalid selection."; return 1
-    fi
+    while true; do
+        wizard_ask "Repository number or name" || return 1
+        if [[ $ANSWER =~ ^[0-9]+$ ]] && ((ANSWER >= 1 && ANSWER <= i)); then
+            IFS=$'\t' read -r name desc <<< "${rows[ANSWER-1]}"
+            W_REPO="${user}/${name}"
+            return 0
+        elif [[ $ANSWER =~ ^[A-Za-z0-9._-]+$ && ! $ANSWER =~ ^[0-9]+$ ]]; then
+            W_REPO="${user}/${ANSWER}"
+            return 0
+        fi
+        warn "Please enter a number from 1 to ${i}, a repository name, or q to cancel."
+    done
 }
 
 wizard_pick_release() {  # sets W_RELEASE (json) and W_TAGNAME
@@ -1013,8 +1030,7 @@ wizard_pick_release() {  # sets W_RELEASE (json) and W_TAGNAME
         IFS=$'\t' read -r t d c <<< "$row"
         printf '  %2d) %-34s %s  (%s %s)\n' "$i" "$t" "$d" "$c" "$([[ $c == 1 ]] && echo file || echo files)"
     done
-    ask "Release number" "1"
-    if [[ ! $ANSWER =~ ^[0-9]+$ ]] || ((ANSWER < 1 || ANSWER > i)); then err "Invalid selection."; return 1; fi
+    wizard_pick_number "Release number" "$i" 1 || return 1
     IFS=$'\t' read -r t d c <<< "${rows[ANSWER-1]}"
     W_TAGNAME=$t
     W_RELEASE=$(jq -c --arg t "$t" '[.[] | select(.tag == $t)] | first // empty' <<< "$releases")
@@ -1026,6 +1042,23 @@ W_KIND="rpm"; W_ASSET=""; W_ASSET_URL=""; W_ASSET_SIZE=0
 ANY_ARCH_RE='x86[_-]64|amd64|x64|aarch64|arm[_-]?64|armv[0-9]|armhf|i[3-6]86|riscv|ppc64|s390x'
 FOREIGN_OS_RE='darwin|macos|osx|windows|win32|win64|android|freebsd|openbsd|netbsd'
 NON_PROGRAM_RE='\.(rpm|deb|zip|tar|tgz|gz|xz|bz2|zst|7z|sha256|sha512|sha256sum|sha512sum|sum|sums|sig|asc|pem|minisig|cert|bundle|sbom|spdx|json|ya?ml|toml|txt|md|html|pdf|dmg|pkg|exe|msi|apk|aab|ipa|snap|flatpak|appx|msix|whl|jar|nupkg|zsync|blockmap|so|dll|dylib|a|lib|log)$|sha256|sha512|checksum'
+
+# A single-file program has no extension (tool-linux-amd64), or one of these. Anything else that looks
+# like an extension (.mar update packages, .xpi, formats not listed above) is not offered.
+PROGRAM_EXT_RE='^(appimage|run|bin|sh|bash|py|pyz|pl|rb)$'
+
+is_program_name() {  # is_program_name <lowercase-file-name>
+    local ext
+    [[ $1 =~ $NON_PROGRAM_RE ]] && return 1
+    if [[ $1 == *.* ]]; then
+        ext=${1##*.}
+        # only letters counts as an extension; "tool-1.2.3" or "tool.x86_64" do not have one
+        if [[ $ext =~ ^[a-z]{1,9}$ && ! $ext =~ $PROGRAM_EXT_RE ]]; then return 1; fi
+    fi
+    return 0
+}
+
+is_linux_name() { [[ $1 == *linux* || $1 == *.appimage ]]; }   # every AppImage is a Linux program
 
 all_assets() {  # "name<TAB>size<TAB>url" for every file in the chosen release
     jq -r '.assets[] | [.name, (.size | tostring), .url] | join("\t")' <<< "$W_RELEASE"
@@ -1040,17 +1073,17 @@ asset_rows() {
         lname=${row%%$'\t'*}; lname=${lname,,}
         if [[ $kind == rpm ]]; then
             [[ $lname == *.rpm ]] || continue
-        elif [[ $lname =~ $NON_PROGRAM_RE ]]; then
+        elif ! is_program_name "$lname"; then
             continue
         fi
         pool+=("$row")
-        if [[ $lname == *linux* ]]; then linux=1; fi
+        if is_linux_name "$lname"; then linux=1; fi
     done < <(all_assets)
     for row in "${pool[@]}"; do
         lname=${row%%$'\t'*}; lname=${lname,,}
         if [[ $kind == binary ]]; then
             if ((linux)); then
-                [[ $lname == *linux* ]] || continue
+                is_linux_name "$lname" || continue
             elif [[ $lname =~ $FOREIGN_OS_RE ]]; then
                 continue
             fi
@@ -1069,7 +1102,7 @@ wizard_pick_asset() {  # sets W_KIND, W_ASSET, W_ASSET_URL, W_ASSET_SIZE
         info "This release has two kinds of files you could install:"
         info "  1) System package (.rpm), installed with dnf"
         info "  2) Single-file program (AppImage or executable), installed to ${BIN_DIR}"
-        ask "Choice" "1"
+        wizard_pick_number "Choice" 2 1 || return 1
         if [[ $ANSWER == 2 ]]; then W_KIND=binary; else W_KIND=rpm; fi
     elif ((n_rpm > 0)); then
         W_KIND=rpm
@@ -1096,7 +1129,7 @@ wizard_pick_asset() {  # sets W_KIND, W_ASSET, W_ASSET_URL, W_ASSET_SIZE
         info "  1) ${host_label} (this machine)"
         info "  2) ${other_label}"
         info "  3) Show every matching file in the release"
-        ask "Choice" "1"
+        wizard_pick_number "Choice" 3 1 || return 1
         case $ANSWER in 2) re=$other_re ;; 3) re="" ;; *) re=$host_re ;; esac
     fi
 
@@ -1115,8 +1148,7 @@ wizard_pick_asset() {  # sets W_KIND, W_ASSET, W_ASSET_URL, W_ASSET_SIZE
             IFS=$'\t' read -r name size url <<< "$row"
             printf '  %2d) %s  (%s)\n' "$i" "$name" "$(fmt_size "$size")"
         done
-        ask "File number" "1"
-        if [[ ! $ANSWER =~ ^[0-9]+$ ]] || ((ANSWER < 1 || ANSWER > i)); then err "Invalid selection."; return 1; fi
+        wizard_pick_number "File number" "$i" 1 || return 1
         IFS=$'\t' read -r name size url <<< "${rows[ANSWER-1]}"
     fi
     W_ASSET=$name; W_ASSET_SIZE=$size; W_ASSET_URL=$url
@@ -1153,8 +1185,9 @@ detect_rpm_pkg() {  # detect_rpm_pkg <file> <url> -> sets DETECTED_PKG; DETECT_S
 default_name_from_asset() {  # LocalSend-1.19.0-linux-x86-64.rpm -> LocalSend ; tool-linux-amd64 -> Tool
     local base=$1
     base=${base%.rpm}; base=${base%.[Aa]pp[Ii]mage}
-    base=$(sed -E 's/[-_.]v?[0-9].*$//' <<< "$base")
+    # platform words first, so the "64" in "zen-x86_64" isn't taken for a version number
     base=$(sed -E 's/[-_.](linux|gnu|musl|static|amd64|x86[_-]64|x64|arm64|aarch64|armv[0-9a-z]+|i[3-6]86)([-_.].*)?$//I' <<< "$base")
+    base=$(sed -E 's/[-_.]v?[0-9].*$//' <<< "$base")
     pretty_name "$base"
 }
 
@@ -1164,7 +1197,7 @@ add_program() {  # add_program [url|owner/repo]
     if [[ -z $input ]]; then
         info "Enter a GitHub URL, owner/repo, or just a username to browse their repos."
         info "  e.g. https://github.com/brave/brave-browser/releases"
-        ask "GitHub URL, owner/repo or username"
+        wizard_ask "GitHub URL, owner/repo or username" || return 1
         input=$ANSWER
     fi
     [[ -n $input ]] || { warn "Nothing entered."; return 1; }

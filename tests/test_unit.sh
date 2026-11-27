@@ -106,6 +106,8 @@ test_derived_names() {
     assert_eq "$(default_name_from_asset brave-browser-1.85.118-1.x86_64.rpm)" "Brave Browser"
     assert_eq "$(default_name_from_asset tool-linux-amd64)" "Tool"
     assert_eq "$(default_name_from_asset Obsidian-1.7.7.AppImage)" "Obsidian"
+    assert_eq "$(default_name_from_asset zen-x86_64.AppImage)" "Zen"
+    assert_eq "$(default_name_from_asset tool_1.2.3_linux_amd64)" "Tool"
     assert_eq "$(slugify "Brave Browser")" "brave-browser"
     assert_eq "$(slugify "  Ente Auth!! ")" "ente-auth"
     assert_eq "$(clean_value "it's"$'\n'"two")" "its two" "clean_value"
@@ -173,6 +175,26 @@ test_wizard_file_filtering() {
     W_RELEASE=$(jq -nc '{assets: [ $ARGS.positional[] | {name: ., size: 100, url: ("https://x/" + .)} ]}' --args \
         tool-amd64 tool-darwin-amd64 tool-windows-amd64.exe tool.sh.sha256 install.sh)
     assert_eq "$(asset_names binary "")" "tool-amd64 install.sh " "no linux in names"
+
+    # Zen Browser's real file list: "linux.mar" must not hide the AppImages, and .mar is not a program
+    W_RELEASE=$(jq -nc '{assets: [ $ARGS.positional[] | {name: ., size: 100, url: ("https://x/" + .)} ]}' --args \
+        linux-aarch64.mar linux.mar macos.mar windows-arm64.mar windows.mar zen-aarch64.AppImage \
+        zen-aarch64.AppImage.zsync zen-x86_64.AppImage zen-x86_64.AppImage.zsync zen.installer-arm64.exe \
+        zen.installer.exe zen.linux-aarch64.tar.xz zen.linux-x86_64.tar.xz zen.macos-universal.dmg zen.source.tar.zst)
+    assert_eq "$(asset_names binary "")" "zen-aarch64.AppImage zen-x86_64.AppImage " "zen files"
+    assert_eq "$(asset_names binary 'x86[_-]64|amd64|x64')" "zen-x86_64.AppImage " "zen host arch"
+    assert_eq "$(asset_names rpm "")" "" "zen has no rpm"
+}
+
+test_is_program_name() {
+    load_relup
+    local n
+    for n in tool tool-linux-amd64 tool-1.2.3 tool.x86_64 zen-x86_64.appimage install.sh app.run app.bin tool.pyz; do
+        assert_true is_program_name "$n"
+    done
+    for n in linux.mar addon.xpi tool.tar.xz tool.zip tool.deb tool.rpm sha256sums.txt tool.appimage.zsync tool.sig app.msi; do
+        assert_false is_program_name "$n"
+    done
 }
 
 test_checksum_candidates() {

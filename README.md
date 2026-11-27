@@ -50,7 +50,7 @@ On first run, `relup` offers to add your first program. For example, enter:
 https://github.com/brave/brave-browser/releases
 ```
 
-You then pick a release and, when the release has both an `.rpm` and an AppImage or executable, which kind you want. After that come your CPU architecture (only if the file names mention one) and the file to track (only if several match). `relup` reads the package name from the file's header, checks whether you already have the program installed, shows a short summary and asks once before saving. If the program isn't installed yet, it offers to install it.
+Every question shows its default in brackets (press Enter to accept it), and you can type `q` at any question to cancel. You then pick a release and, when the release has both an `.rpm` and an AppImage or executable, which kind you want. After that come your CPU architecture (only if the file names mention one) and the file to track (only if several match). `relup` reads the package name from the file's header, checks whether you already have the program installed, shows a short summary and asks once before saving. If the program isn't installed yet, it offers to install it.
 
 Once you are tracking programs, running `relup` opens the main menu:
 
@@ -110,7 +110,7 @@ Nothing is downloaded or installed, and no prompts appear. It also tells you how
 
 Some projects publish one runnable file instead of a package: an AppImage, a static executable or a script. `relup` installs these by copying the file into a folder (`BIN_DIR`, by default `~/.local/bin`) and marking it executable.
 
-- **Which files qualify.** AppImages, Linux executables and scripts. The wizard hides archives (`.tar.gz`, `.zip`), packages for other systems, checksum and signature files, and builds for other operating systems. When a release has both an `.rpm` and an AppImage, it asks which you want.
+- **Which files qualify.** AppImages, Linux executables and scripts: files with no extension, or one such as `.AppImage`, `.sh`, `.run` or `.bin`. The wizard hides archives (`.tar.gz`, `.zip`), packages for other systems, update packages such as `.mar`, checksum and signature files, and builds for other operating systems. When a release has both an `.rpm` and an AppImage, it asks which you want.
 - **Safe replacement.** The new file is installed next to the old one and then renamed over it, so a program that is running can be replaced. A file that isn't an ELF binary, AppImage or script (for example an archive with an unlucky name) is refused before anything is touched.
 - **Remembering the version.** There is no package database for single files, so `relup` records what it installed in `~/.local/state/relup/installed/<id>`. If a file is already at the destination but `relup` didn't put it there, its version shows as `unknown` and the first update replaces it. `sudo` is only used when the install folder isn't writable by you.
 - **Make sure the folder is in your `PATH`.** `relup` warns when it isn't.

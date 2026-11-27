@@ -17,10 +17,13 @@ All notable changes to `relup` are listed here. The format follows [Keep a Chang
 
 ### Fixed
 - A checksum list that names several similar files (for example `tool-linux-amd64` and `tool-linux-amd64.tar.gz`) could give the hash of the wrong file, so a good download was refused as a checksum mismatch. The line for exactly that file name is now used (also in BSD style and with a folder in front of the name).
+- The wizard missed AppImages whose name doesn't say "linux" (e.g. `zen-x86_64.AppImage`) when another file did (e.g. `linux.mar`), and offered unknown formats such as Firefox-style `.mar` update packages as programs. AppImages now always count as Linux files, and only files with no extension or a program extension (`.AppImage`, `.sh`, `.run`, `.bin`, ...) are offered.
+- The program name derived from a file like `zen-x86_64.AppImage` was "Zen X86" instead of "Zen".
 - With no input to answer a question (an unattended `relup -y update --all`, e.g. from cron), `relup` exited at the first question, such as "install a download without a checksum?", skipped every remaining program and still reported success. Now no input counts as "no": that program is skipped, the rest are updated, and the run ends with an error status.
 
 ### Changed
 - The wizard no longer asks about architecture when no file name mentions one.
+- Every wizard question shows "q to cancel", and an invalid answer asks again instead of ending the wizard.
 - The uninstall confirmation shows the exact command that will run.
 - `--help` documents the new options, folders and environment variables.
 
