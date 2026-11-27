@@ -78,6 +78,8 @@ After each job, `relup` waits so you can read the output, then lets you return t
 
 Add `-y` / `--yes` to answer yes to ordinary confirmation prompts. Uninstalling, replacing a config and installing a download that has no published checksum always ask, even with `-y`. For a program you trust that publishes no checksum, set `VERIFY_CHECKSUM='skip'` in its config to update it unattended.
 
+When there is no input to answer a question (for example `relup -y update --all` run from cron), the answer counts as **no**. `relup` skips that program, carries on with the others, and exits with an error status so the skipped program doesn't go unnoticed.
+
 ### Checking for updates
 
 `relup check` (or option 1 in the menu) compares what you have installed with the latest release of every tracked program:
@@ -203,7 +205,7 @@ Versions are compared number by number, the way `sort -V` does. This is not full
 Before installing, `relup` tries to verify the download, in this order:
 
 1. The SHA-256 digest GitHub lists for the file in the release.
-2. A checksum file attached to the same release (`<file>.sha256`, `SHA256SUMS`, `checksums.txt` and similar).
+2. A checksum file attached to the same release (`<file>.sha256`, `SHA256SUMS`, `checksums.txt` and similar). The line for exactly that file name is used, so `tool` and `tool.tar.gz` in the same list are never confused.
 
 If the checksum does not match, the file is **not** installed. If the release publishes no checksum, `relup` warns and asks before installing (`VERIFY_CHECKSUM='auto'`, and `-y` does not answer for you), refuses (`required`), or skips the check (`skip`). Checksum files larger than 2 MB are ignored.
 
@@ -222,6 +224,16 @@ Without authentication, GitHub allows 60 API requests per hour, and each program
 2. If you use the GitHub CLI, set `USE_GH_AUTH=yes` in `settings.conf` to reuse its login (`gh auth login`), so there is no token to manage. The token is only ever sent to `api.github.com`. `GITHUB_TOKEN` wins if both are set.
 
 If you do run out of requests, `relup` falls back to the last saved answer and tells you so, instead of failing. Set `CACHE=no` to turn the cache off; it is always safe to delete `~/.cache/relup/`. Never commit a token to a repository.
+
+## Tests
+
+```bash
+tests/run.sh               # run every test
+tests/run.sh checksum      # only tests whose name contains "checksum"
+tests/run.sh -v            # also show the output of passing tests
+```
+
+The tests need only `bash`, `jq` and coreutils. They use the real `jq` but replace `curl`, `rpm` and `sudo` with small fakes (in `tests/mocks/`): a pretend GitHub served from files, a pretend rpm database, and a `sudo dnf` that only updates that database. Each test runs in its own temporary home folder, so your real configuration, installed programs and the network are never touched.
 
 ## Roadmap
 

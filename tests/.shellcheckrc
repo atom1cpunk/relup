@@ -1,0 +1,3 @@
+# The tests share globals across files (lib.sh sets them, test_*.sh reads them, relup's
+# functions read what the tests set), which shellcheck can't see when checking one file.
+disable=SC2034,SC2154,SC1091

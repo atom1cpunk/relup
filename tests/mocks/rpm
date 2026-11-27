@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Fake rpm for the relup tests.
+#
+# Installed packages live in $MOCK_RPMDB/<name>, one line: "<version> <install-time>".
+# A fake .rpm file is a text file starting with the line FAKERPM, then NAME=... and VERSION=...
+# (see fake_rpm in tests/lib.sh). Supports what relup uses:
+#   rpm -q [--qf FMT] PKG...    rpm -qa --qf FMT    rpm -qp [--nosignature --nodigest] --qf FMT FILE
+set -u
+db=${MOCK_RPMDB:?}
+mode="" qf="" args=()
+while (($#)); do
+    case $1 in
+        -q)  mode=q ;;
+        -qa) mode=qa ;;
+        -qp) mode=qp ;;
+        -a)  mode=qa ;;
+        -p)  mode=qp ;;
+        --qf|--queryformat) qf=$2; shift ;;
+        --nosignature|--nodigest) ;;
+        -*) echo "mock rpm: unsupported option $1" >&2; exit 2 ;;
+        *) args+=("$1") ;;
+    esac
+    shift
+done
+
+fmt() {  # fmt <name> <version> <install-time>
+    local s=${qf:-'%{NAME}-%{VERSION}-1.x86_64\n'}
+    s=${s//'%{NAME}'/$1}; s=${s//'%{VERSION}'/$2}; s=${s//'%{INSTALLTIME}'/$3}
+    printf '%b' "$s"
+}
+
+rc=0
+case $mode in
+    qa)
+        for f in "$db"/*; do
+            [[ -f $f ]] || continue
+            read -r v t < "$f"
+            fmt "${f##*/}" "$v" "$t"
+        done ;;
+    q)
+        for p in "${args[@]}"; do
+            if [[ -f $db/$p ]]; then
+                read -r v t < "$db/$p"
+                fmt "$p" "$v" "$t"
+            else
+                echo "package $p is not installed"; rc=1
+            fi
+        done ;;
+    qp)
+        f=${args[0]:-}
+        if [[ ! -f $f ]] || [[ $(head -n1 "$f") != FAKERPM ]]; then
+            echo "error: ${f}: not an rpm package" >&2; exit 1
+        fi
+        fmt "$(sed -n 's/^NAME=//p' "$f")" "$(sed -n 's/^VERSION=//p' "$f")" 0 ;;
+    *) echo "mock rpm: unsupported call" >&2; exit 2 ;;
+esac
+exit $rc

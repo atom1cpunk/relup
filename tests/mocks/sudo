@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Fake sudo for the relup tests. Every call is appended to $MOCK_SUDO_LOG.
+#
+#   sudo dnf install|upgrade -y FILE...  -> records the fake rpm in $MOCK_RPMDB
+#                                           ($MOCK_DNF_NOOP set: does nothing, like a no-op dnf)
+#   sudo dnf remove -y PKG...            -> removes it from $MOCK_RPMDB
+#   sudo <anything else>                 -> runs it as the current user. If $MOCK_SUDO_UNLOCK names
+#                                           a folder, it is made writable for the duration, so
+#                                           "needs root" can be tested without root.
+# The real dnf is never run.
+set -u
+printf '%s\n' "$*" >> "${MOCK_SUDO_LOG:-/dev/null}"
+
+if [[ ${1:-} == dnf ]]; then
+    shift; verb=${1:-}; shift
+    if [[ ${1:-} == -y ]]; then shift; fi
+    case $verb in
+        install|upgrade)
+            for f in "$@"; do
+                if [[ ! -f $f ]] || [[ $(head -n1 "$f") != FAKERPM ]]; then
+                    echo "mock dnf: ${f} is not an rpm package" >&2; exit 1
+                fi
+                name=$(sed -n 's/^NAME=//p' "$f"); ver=$(sed -n 's/^VERSION=//p' "$f")
+                if [[ -n ${MOCK_DNF_NOOP:-} ]]; then echo "Nothing to do."; continue; fi
+                if [[ $verb == upgrade && ! -f ${MOCK_RPMDB:?}/$name ]]; then
+                    echo "mock dnf: package ${name} is not installed" >&2; exit 1
+                fi
+                printf '%s %s\n' "$ver" "${MOCK_NOW:-1764150000}" > "${MOCK_RPMDB:?}/$name"
+            done ;;
+        remove)
+            for p in "$@"; do
+                [[ -f ${MOCK_RPMDB:?}/$p ]] || { echo "No match for argument: $p" >&2; exit 1; }
+                rm -f "$MOCK_RPMDB/$p"
+            done ;;
+        *) echo "mock dnf: unsupported command ${verb}" >&2; exit 2 ;;
+    esac
+    exit 0
+fi
+
+if [[ -n ${MOCK_SUDO_UNLOCK:-} ]]; then chmod u+w "$MOCK_SUDO_UNLOCK"; fi
+rc=0
+"$@" || rc=$?
+if [[ -n ${MOCK_SUDO_UNLOCK:-} ]]; then chmod u-w "$MOCK_SUDO_UNLOCK"; fi
+exit $rc

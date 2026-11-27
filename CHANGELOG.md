@@ -13,6 +13,11 @@ All notable changes to `relup` are listed here. The format follows [Keep a Chang
 - **Settings** `BIN_DIR`, `CACHE` and `CLEAR_SCREEN` (turn off screen clearing).
 - Program config keys `BIN_NAME` and `DEST_DIR` for single-file programs.
 - When a release has both an `.rpm` and an AppImage or executable, the wizard asks which kind to track. It hides archives, packages for other systems, checksum and signature files, and other operating systems' builds.
+- Automated tests (`tests/run.sh`), using the real `jq` with fake `curl`, `rpm` and `sudo`.
+
+### Fixed
+- A checksum list that names several similar files (for example `tool-linux-amd64` and `tool-linux-amd64.tar.gz`) could give the hash of the wrong file, so a good download was refused as a checksum mismatch. The line for exactly that file name is now used (also in BSD style and with a folder in front of the name).
+- With no input to answer a question (an unattended `relup -y update --all`, e.g. from cron), `relup` exited at the first question, such as "install a download without a checksum?", skipped every remaining program and still reported success. Now no input counts as "no": that program is skipped, the rest are updated, and the run ends with an error status.
 
 ### Changed
 - The wizard no longer asks about architecture when no file name mentions one.

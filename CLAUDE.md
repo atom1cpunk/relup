@@ -14,12 +14,13 @@ A single-file Bash tool (`relup`) that keeps programs installed by hand up to da
 
 - `relup`: the whole program.
 - `README.md`, `CHANGELOG.md` (Keep a Changelog format), `LICENSE` (GPLv3), `docs/*.png` (README screenshots).
+- `tests/`: `run.sh` (runner, plain Bash, no bats), `lib.sh` (fresh fake HOME per test, fixture builders, assertions), `test_*.sh`, and `mocks/` with fake `curl` (pretend GitHub served from files, ETags, rate limit, offline), `rpm` (pretend rpm database) and `sudo` (fake `dnf`; anything else runs as the user). Only these three are mocked; the real `jq` is used.
 - User data (not in the repo): `~/.config/relup/settings.conf`, `~/.config/relup/apps.d/<id>.conf` (one per tracked program), cache `~/.cache/relup/`, state `~/.local/state/relup/installed/<id>`.
 
 ## Design rules (do not break these without asking)
 
 - **Config files are data, never code.** They are read by `parse_conf` with a whitelist of keys. No `source`, no `eval`.
-- **`confirm` vs `confirm_strict`.** `-y` answers `confirm` only. Uninstalling, replacing a config and installing a download with no published checksum always ask (`confirm_strict`). Per-program `VERIFY_CHECKSUM='skip'` is the unattended route.
+- **`confirm` vs `confirm_strict`.** `-y` answers `confirm` only. No input (EOF) answers either one with "no", never by exiting. Uninstalling, replacing a config and installing a download with no published checksum always ask (`confirm_strict`). Per-program `VERIFY_CHECKSUM='skip'` is the unattended route.
 - **`set -euo pipefail` is on.** `main` only runs when the script is executed (not when sourced), so tests can `source ./relup` and call functions.
 - **Plug-in style install methods.** A method `<m>` provides `installed_version_<m>`, `install_<m>`, `uninstall_<m>`, `install_command_<m>`, `uninstall_command_<m>`, `describe_target_<m>`, and optionally `installed_date_<m>` and `package_name_<m>`. Today: `rpm` (dnf) and `binary` (AppImage, executable, script copied into `BIN_DIR`). Release sources work the same way: `<source>_releases` (only `github` exists).
 - **Choosing a release.** Up to 3 pages (300 releases) are searched; drafts and prereleases are skipped; `TAG_PREFIX` separates products in shared repos (`auth-v`, `desktop-v`); the first release with a file matching `ASSET_REGEX` wins.
@@ -34,11 +35,11 @@ A single-file Bash tool (`relup`) that keeps programs installed by hand up to da
 
 - Up to **0.2.1**: run by the user on real Fedora with real `jq`, `dnf` and GitHub (Brave, Ente Auth, Bitwarden, LocalSend all worked).
 - **0.3.0 additions have only been tested against mocks** (a Python stand-in for `jq`, fake `curl`/`rpm`/`sudo`): the ETag cache, `USE_GH_AUTH`, the `binary` install method, `--dry-run`, and the new wizard file filtering. Also never run live: reading the package name from the first 512 KiB / 4 MiB of an rpm with `rpm -qp --nosignature --nodigest`, and GitHub's per-asset `digest` field.
-- The mock test suite from the original conversation was lost when its sandbox was reset. Rebuilding automated tests in `tests/` (using the real `jq`) is the first planned job.
+- The automated tests in `tests/` (rebuilt 2026-11-26, using the real `jq`) cover all of the above against the fake `curl`/`rpm`/`sudo`. They found and fixed two bugs: `extract_hash` took the first line *containing* the file name, and a question with no input exited 0 halfway through `update --all`. Tests are not a substitute for the live check: real rpm header reads, GitHub's `digest` field and `USE_GH_AUTH` (needs the real `gh`) are still untested.
 
 ## Working conventions
 
-- Run `bash -n relup` and `shellcheck relup` after changes.
+- Run `bash -n relup`, `shellcheck relup` and `tests/run.sh` after changes, and add a test for each fix or new behaviour. `shellcheck relup` currently reports 5 known, harmless notes (SC2088, SC2174, SC2034 x2, SC2018/2019).
 - Never commit tokens. Never move or delete a published tag, and don't overwrite assets on an existing release.
 - Update `README.md` and `CHANGELOG.md` whenever behaviour changes.
 - Release steps: bump `TOOL_VERSION`, update the README status line and the CHANGELOG, commit and push, then `gh release create vX.Y.Z relup --target main --title "relup X.Y.Z" --notes-file <notes>`.
@@ -46,4 +47,4 @@ A single-file Bash tool (`relup`) that keeps programs installed by hand up to da
 
 ## Roadmap
 
-Next: tests in `tests/`, a live check of 0.3.0, then release 0.3.0. Later: archives (`.tar.gz`), `.deb` and Flatpak install types, logging, pin/skip a version, keeping the previous version for rollback, parallel status checks. GitLab support is deliberately deferred.
+Next: a live check of 0.3.0, then release 0.3.0. Later: archives (`.tar.gz`), `.deb` and Flatpak install types, logging, pin/skip a version, keeping the previous version for rollback, parallel status checks. GitLab support is deliberately deferred.

@@ -123,7 +123,13 @@ _confirm() {  # _confirm <message> <default y|n>
     local reply hint="[y/N]"
     [[ $2 == y ]] && hint="[Y/n]"
     printf '%s %s ' "$1" "$hint" >&2
-    read -r reply || { echo >&2; exit 0; }
+    # No input (Ctrl-D, or an unattended run with nothing on stdin) counts as "no". Exiting here
+    # instead would end "update --all" halfway through and still report success.
+    if ! read -r reply; then
+        echo >&2
+        warn "No answer (no input); taking that as no."
+        return 1
+    fi
     reply=${reply:-$2}
     [[ $reply =~ ^[Yy] ]]
 }
@@ -658,7 +664,14 @@ checksum_candidates() {  # prints URLs of possible checksum files, best first
 
 extract_hash() {  # extract_hash <checksum-file> <asset-name> <is-sidecar 0|1>
     local cs=$1 name=$2 sidecar=$3 line="" lines
-    line=$(grep -F -- "$name" "$cs" 2>/dev/null | head -n1 || true)
+    # Use the line that names exactly this file, not the first one that merely contains its name
+    # (tool-linux-amd64 vs tool-linux-amd64.tar.gz). Understands "hash  name", "hash *name",
+    # "hash  ./dir/name" and the BSD style "SHA256 (name) = hash".
+    line=$(awk -v n="$name" '{
+               for (i = 1; i <= NF; i++) {
+                   f = $i; sub(/^\*/, "", f); sub(/^\(/, "", f); sub(/\)$/, "", f); sub(/^.*\//, "", f)
+                   if (f == n) { print; exit }
+               } }' "$cs" 2>/dev/null || true)
     if [[ -z $line && $sidecar -eq 1 ]]; then
         lines=$(grep -c . "$cs" 2>/dev/null || true)
         if [[ ${lines:-0} -eq 1 ]]; then line=$(grep . "$cs" | head -n1); fi

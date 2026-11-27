@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Fake curl for the relup tests. Nothing goes to the network.
+#
+#   https://api.github.com/<path>  -> $MOCK_GH/api/<path with / ? & = turned into _>.json
+#                                     (+ .etag next to it: sent as ETag, and answered with 304
+#                                     when the request carries a matching If-None-Match)
+#   any other URL                  -> $MOCK_GH/web/<host>/<path>
+#
+# Switches: $MOCK_GH/offline (curl fails as if there were no network),
+#           $MOCK_GH/ratelimit (every API request gets 403).
+# Every request is appended to $MOCK_LOG as: URL <TAB> range <TAB> header|header|...
+set -u
+
+headers=() dump="" wfmt="" out="" range="" maxsize="" fail=0 url=""
+while (($#)); do
+    case $1 in
+        -H) headers+=("$2"); shift ;;
+        -D) dump=$2; shift ;;
+        -w) wfmt=$2; shift ;;
+        -o) out=$2; shift ;;
+        -r) range=$2; shift ;;
+        --max-filesize) maxsize=$2; shift ;;
+        --*) ;;
+        -*) if [[ $1 == *f* ]]; then fail=1; fi ;;
+        *) url=$1 ;;
+    esac
+    shift
+done
+
+hdr_list=$(IFS='|'; printf '%s' "${headers[*]-}")
+printf '%s\t%s\t%s\n' "$url" "$range" "$hdr_list" >> "${MOCK_LOG:-/dev/null}"
+
+if [[ -e ${MOCK_GH:?}/offline ]]; then
+    echo "curl: (6) Could not resolve host: ${url#*://}" >&2
+    exit 6
+fi
+
+body_file="" code=200 etag=""
+if [[ $url == https://api.github.com/* ]]; then
+    path=${url#https://api.github.com/}
+    key=$(printf '%s' "$path" | sed 's#[/?&=]#_#g')
+    if [[ -e $MOCK_GH/ratelimit ]]; then
+        code=403; body_file=$MOCK_GH/ratelimit
+    elif [[ -f $MOCK_GH/api/$key.json ]]; then
+        body_file=$MOCK_GH/api/$key.json
+        if [[ -f $MOCK_GH/api/$key.etag ]]; then etag=$(<"$MOCK_GH/api/$key.etag"); fi
+        for h in "${headers[@]}"; do
+            if [[ -n $etag && ${h,,} == "if-none-match: "* && ${h#*: } == "$etag" ]]; then
+                code=304; body_file=""
+            fi
+        done
+    else
+        code=404
+    fi
+else
+    f=$MOCK_GH/web/${url#*://}
+    if [[ -f $f ]]; then body_file=$f; else code=404; fi
+fi
+
+if ((fail && code >= 400)); then
+    echo "curl: (22) The requested URL returned error: ${code}" >&2
+    exit 22
+fi
+if [[ -n $maxsize && -z $range && -n $body_file ]] && (($(stat -c %s "$body_file") > maxsize)); then
+    echo "curl: (63) Maximum file size exceeded" >&2
+    exit 63
+fi
+
+if [[ -n $dump ]]; then
+    {
+        printf 'HTTP/2 %s\r\n' "$code"
+        if [[ -n $etag ]]; then printf 'etag: %s\r\n' "$etag"; fi
+        printf '\r\n'
+    } > "$dump"
+fi
+
+emit() {
+    if [[ -n $body_file ]]; then
+        if [[ -n $range ]]; then head -c $((${range#*-} + 1)) "$body_file"; else cat "$body_file"; fi
+    elif ((code == 404)); then
+        printf '{"message":"Not Found"}'
+    fi
+}
+if [[ -n $out ]]; then emit > "$out"; else emit; fi
+if [[ -n $wfmt ]]; then printf '%s' "${wfmt//'%{http_code}'/$code}"; fi
+exit 0
