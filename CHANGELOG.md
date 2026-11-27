@@ -2,7 +2,7 @@
 
 All notable changes to `relup` are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). While the version is below 1.0, a minor version (0.x.0) can change behaviour.
 
-## [0.3.0] - unreleased
+## [0.3.0] - 2026-11-27
 
 ### Added
 - **Single-file programs.** A new `binary` install type for AppImages, executables and scripts. Files are installed into `BIN_DIR` (default `~/.local/bin`), replaced safely while running, and refused if they are not an ELF binary, AppImage or script. What was installed is recorded in `~/.local/state/relup/installed/`. `sudo` is only used when the folder isn't writable.
@@ -62,6 +62,6 @@ First public release.
 - Interactive menu, `--help`, and plain-text per-program config files that are parsed as data, never executed.
 - Support for `.rpm` packages installed with `dnf`.
 
-[0.3.0]: https://github.com/atom1cpunk/relup/compare/v0.2.1...HEAD
+[0.3.0]: https://github.com/atom1cpunk/relup/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/atom1cpunk/relup/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/atom1cpunk/relup/releases/tag/v0.2.0

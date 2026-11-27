@@ -6,7 +6,7 @@ Read this file at the start of every session. It carries the context from the cl
 
 A single-file Bash tool (`relup`) that keeps programs installed by hand up to date from their GitHub release pages. It has an interactive menu and plain commands (`add`, `list`, `check`, `update <id>|--all`, `edit`, `remove`, `config`). Author: Dmitry Goldshmidt, GPLv3. Repo: `atom1cpunk/relup`.
 
-- Current code version: **0.3.0** (`TOOL_VERSION` in the script). **Not released yet.** Tagged releases so far: `v0.2.0` and `v0.2.1`. `main` is ahead of `v0.2.1`.
+- Current code version: **0.3.0** (`TOOL_VERSION` in the script), released 2026-11-27. Tagged releases: `v0.2.0`, `v0.2.1`, `v0.3.0`. The next version is 0.3.1 (see the roadmap).
 - Target system: Fedora (bash 4.4+, `curl`, `jq`, `sha256sum`, `rpm`, `dnf`). The `gh` CLI is installed and logged in.
 - The tool was renamed from `ghup` to `relup` before the first commit. The name may change again, so never hard-code it: use `TOOL_NAME` / `TOOL_VERSION`.
 
@@ -39,7 +39,7 @@ A single-file Bash tool (`relup`) that keeps programs installed by hand up to da
 ## What has and hasn't been verified on real systems
 
 - Up to **0.2.1**: run by the user on real Fedora with real `jq`, `dnf` and GitHub (Brave, Ente Auth, Bitwarden, LocalSend all worked).
-- **0.3.0 additions have only been tested against mocks** (a Python stand-in for `jq`, fake `curl`/`rpm`/`sudo`): the ETag cache, `USE_GH_AUTH`, the `binary` install method, `--dry-run`, and the new wizard file filtering. Also never run live: reading the package name from the first 512 KiB / 4 MiB of an rpm with `rpm -qp --nosignature --nodigest`, and GitHub's per-asset `digest` field.
+- **0.3.0**: before release the user ran a live test on real Fedora (2026-11-27), which found the Caligula case (a hand-installed single file shown as `unknown`), fixed before release. GitHub's per-asset `digest` field was confirmed live (it matched Caligula's real file). Not individually confirmed: reading the package name from a partial rpm download, and `USE_GH_AUTH` with the real `gh`.
 - The automated tests in `tests/` (rebuilt 2026-11-26, using the real `jq`) cover all of the above against the fake `curl`/`rpm`/`sudo`. They found and fixed two bugs: `extract_hash` took the first line *containing* the file name, and a question with no input exited 0 halfway through `update --all`. An Opus review of the 0.3.0 branch (2026-11-27) found no checksum bypass or config-as-code path; its findings 1-5 were fixed with tests. Left for 0.3.1: version strings written differently (`1.0` vs `1.0.0`, `-1` suffix) never count as up to date; HTTP 401 (expired token) gives no hint; repository descriptions in the wizard are not stripped of control characters. Tests are not a substitute for the live check: real rpm header reads, GitHub's `digest` field and `USE_GH_AUTH` (needs the real `gh`) are still untested.
 
 ## Working conventions
@@ -52,4 +52,4 @@ A single-file Bash tool (`relup`) that keeps programs installed by hand up to da
 
 ## Roadmap
 
-Next: a live check of 0.3.0, then release 0.3.0. Later: archives (`.tar.gz`), `.deb` and Flatpak install types, logging, pin/skip a version, keeping the previous version for rollback, parallel status checks. GitLab support is deliberately deferred.
+Next (0.3.1): the three audit leftovers above, and detection of already-installed programs beyond the checksum match (copies elsewhere in `PATH`, rpm packages with a different name such as Brave's `brave-origin`, Flatpaks). Also bump `actions/checkout` to v5 (v4 runs on a deprecated Node.js). Later: archives (`.tar.gz`), `.deb` and Flatpak install types, logging, pin/skip a version, keeping the previous version for rollback, parallel status checks. GitLab support is deliberately deferred.
