@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/check-relup.sh\"",
+            "timeout": 60,
+            "statusMessage": "Checking relup (bash -n, shellcheck)"
+          }
+        ]
+      }
+    ]
+  }
+}

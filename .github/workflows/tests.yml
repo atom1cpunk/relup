@@ -1,0 +1,37 @@
+# Runs on every push and pull request: syntax check, shellcheck and the test suite.
+# The tests use fake curl/rpm/sudo, so nothing is installed and GitHub's API is not called.
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          if ! command -v shellcheck >/dev/null || ! command -v jq >/dev/null; then
+            sudo apt-get update && sudo apt-get install -y shellcheck jq
+          fi
+          bash --version | head -n1
+          shellcheck --version | sed -n 2p
+          jq --version
+
+      - name: Syntax (bash -n)
+        run: bash -n relup
+
+      - name: shellcheck
+        # The five known, harmless notes in relup are listed in CLAUDE.md.
+        run: |
+          shellcheck -e SC2088,SC2174,SC2034,SC2018,SC2019 relup
+          shellcheck -x tests/run.sh tests/lib.sh tests/test_*.sh tests/mocks/*
+
+      - name: Tests
+        run: tests/run.sh
