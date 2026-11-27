@@ -1,0 +1,49 @@
+# relup: project guide for Claude
+
+Read this file at the start of every session. It carries the context from the claude.ai conversation where relup was designed and built, so keep it current as decisions change.
+
+## What relup is
+
+A single-file Bash tool (`relup`) that keeps programs installed by hand up to date from their GitHub release pages. It has an interactive menu and plain commands (`add`, `list`, `check`, `update <id>|--all`, `edit`, `remove`, `config`). Author: Dmitry Goldshmidt, GPLv3. Repo: `atom1cpunk/relup`.
+
+- Current code version: **0.3.0** (`TOOL_VERSION` in the script). **Not released yet.** Tagged releases so far: `v0.2.0` and `v0.2.1`. `main` is ahead of `v0.2.1`.
+- Target system: Fedora (bash 4.4+, `curl`, `jq`, `sha256sum`, `rpm`, `dnf`). The `gh` CLI is installed and logged in.
+- The tool was renamed from `ghup` to `relup` before the first commit. The name may change again, so never hard-code it: use `TOOL_NAME` / `TOOL_VERSION`.
+
+## Files
+
+- `relup`: the whole program.
+- `README.md`, `CHANGELOG.md` (Keep a Changelog format), `LICENSE` (GPLv3), `docs/*.png` (README screenshots).
+- User data (not in the repo): `~/.config/relup/settings.conf`, `~/.config/relup/apps.d/<id>.conf` (one per tracked program), cache `~/.cache/relup/`, state `~/.local/state/relup/installed/<id>`.
+
+## Design rules (do not break these without asking)
+
+- **Config files are data, never code.** They are read by `parse_conf` with a whitelist of keys. No `source`, no `eval`.
+- **`confirm` vs `confirm_strict`.** `-y` answers `confirm` only. Uninstalling, replacing a config and installing a download with no published checksum always ask (`confirm_strict`). Per-program `VERIFY_CHECKSUM='skip'` is the unattended route.
+- **`set -euo pipefail` is on.** `main` only runs when the script is executed (not when sourced), so tests can `source ./relup` and call functions.
+- **Plug-in style install methods.** A method `<m>` provides `installed_version_<m>`, `install_<m>`, `uninstall_<m>`, `install_command_<m>`, `uninstall_command_<m>`, `describe_target_<m>`, and optionally `installed_date_<m>` and `package_name_<m>`. Today: `rpm` (dnf) and `binary` (AppImage, executable, script copied into `BIN_DIR`). Release sources work the same way: `<source>_releases` (only `github` exists).
+- **Choosing a release.** Up to 3 pages (300 releases) are searched; drafts and prereleases are skipped; `TAG_PREFIX` separates products in shared repos (`auth-v`, `desktop-v`); the first release with a file matching `ASSET_REGEX` wins.
+- **Versions.** `version_norm` strips a leading `v` and `+build` metadata; `version_ge` uses `sort -V`. "Installed is the same or newer than latest" counts as up to date, so nothing is ever downgraded. This is not full semver; the tool relies on GitHub's prerelease flag. "none" and "unknown" never count as versions.
+- **Checksums.** Order: the digest GitHub lists for the file, then a checksum file in the same release (files over 2 MB ignored). A mismatch always blocks the install. This does not detect a compromised release, and there is no GPG verification.
+- **rpm installs are verified afterwards.** The installed version is re-queried; "dnf did nothing" is reported as a failure. The real package name is read from the downloaded rpm and written back into the config if the config was wrong.
+- **Binary installs** copy next to the target and `mv` over it (safe for a running program), refuse anything that isn't ELF/AppImage/script, use `sudo` only if the folder isn't writable, and record what was installed in the state file.
+- **GitHub API.** Answers are cached with ETags; the token comes from `GITHUB_TOKEN`, or from `gh auth token` when `USE_GH_AUTH=yes`. When rate limited, the last saved answer is used. Conditional (304) answers are free of the rate limit only when authenticated.
+- **The wizard should need almost no typing.** Names and package names are derived automatically; one confirmation before saving.
+
+## What has and hasn't been verified on real systems
+
+- Up to **0.2.1**: run by the user on real Fedora with real `jq`, `dnf` and GitHub (Brave, Ente Auth, Bitwarden, LocalSend all worked).
+- **0.3.0 additions have only been tested against mocks** (a Python stand-in for `jq`, fake `curl`/`rpm`/`sudo`): the ETag cache, `USE_GH_AUTH`, the `binary` install method, `--dry-run`, and the new wizard file filtering. Also never run live: reading the package name from the first 512 KiB / 4 MiB of an rpm with `rpm -qp --nosignature --nodigest`, and GitHub's per-asset `digest` field.
+- The mock test suite from the original conversation was lost when its sandbox was reset. Rebuilding automated tests in `tests/` (using the real `jq`) is the first planned job.
+
+## Working conventions
+
+- Run `bash -n relup` and `shellcheck relup` after changes.
+- Never commit tokens. Never move or delete a published tag, and don't overwrite assets on an existing release.
+- Update `README.md` and `CHANGELOG.md` whenever behaviour changes.
+- Release steps: bump `TOOL_VERSION`, update the README status line and the CHANGELOG, commit and push, then `gh release create vX.Y.Z relup --target main --title "relup X.Y.Z" --notes-file <notes>`.
+- Explain things plainly. Ask before large or irreversible changes, and say what you ran and what the result was.
+
+## Roadmap
+
+Next: tests in `tests/`, a live check of 0.3.0, then release 0.3.0. Later: archives (`.tar.gz`), `.deb` and Flatpak install types, logging, pin/skip a version, keeping the previous version for rollback, parallel status checks. GitLab support is deliberately deferred.

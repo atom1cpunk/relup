@@ -20,7 +20,7 @@
 set -euo pipefail
 
 TOOL_NAME="relup"
-TOOL_VERSION="0.2.1"
+TOOL_VERSION="0.3.0"
 
 CONF_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/${TOOL_NAME}"
 APPS_DIR="${CONF_ROOT}/apps.d"
@@ -29,6 +29,15 @@ SETTINGS_FILE="${CONF_ROOT}/settings.conf"
 # Defaults; overridden by settings.conf
 DOWNLOAD_DIR="/tmp"
 CLEAR_SCREEN="yes"
+BIN_DIR="$HOME/.local/bin"      # where single-file programs (AppImages, binaries, scripts) are installed
+CACHE="yes"                     # keep GitHub's answers between runs (ETag cache)
+USE_GH_AUTH="no"                # reuse the GitHub CLI's login for API requests
+SETTINGS_KEYS="DOWNLOAD_DIR CLEAR_SCREEN BIN_DIR CACHE USE_GH_AUTH"
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/${TOOL_NAME}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/${TOOL_NAME}"
+API_TOKEN=""
+DRY_RUN=0
 
 ASSUME_YES=0            # -y: answer yes to ordinary prompts
 SKIP_UPDATE_CONFIRM=0   # set during "update all" after the batch was confirmed once
@@ -65,8 +74,11 @@ COMMANDS
   help                    Show this help
 
 OPTIONS
-  -y, --yes               Answer yes to confirmation prompts
-                          (uninstalling always asks)
+  -n, --dry-run           With 'update': show the file, size, checksum and the
+                          command that would run, without downloading or installing
+  -y, --yes               Answer yes to ordinary confirmation prompts
+                          (uninstalling, replacing a config and installing an
+                          unverified download always ask)
   -h, --help              Show this help
   -V, --version           Show the version
 
@@ -74,16 +86,22 @@ FILES
   ${APPS_DIR}/<id>.conf
                           one config file per tracked program
   ${SETTINGS_FILE}
-                          ${TOOL_NAME} settings (download folder)
+                          ${TOOL_NAME} settings (download folder, install folder, cache, ...)
+  ${CACHE_DIR}/
+                          saved GitHub answers (safe to delete)
+  ${STATE_DIR}/installed/
+                          what ${TOOL_NAME} installed, for single-file programs
 
 ENVIRONMENT
   GITHUB_TOKEN            Optional. Raises the GitHub API limit from 60 to
-                          5000 requests per hour.
+                          5000 requests per hour, and makes unchanged answers free.
+                          (Or set USE_GH_AUTH=yes in the settings to reuse "gh" login.)
   VISUAL / EDITOR         Editor used by 'edit' and 'config'.
 
 EXAMPLES
   ${TOOL_NAME} add https://github.com/brave/brave-browser/releases
   ${TOOL_NAME} check
+  ${TOOL_NAME} update --all --dry-run
   ${TOOL_NAME} update --all
 EOF
 }
@@ -145,6 +163,16 @@ DOWNLOAD_DIR=/tmp
 
 # Clear the screen before each menu and job (yes or no).
 CLEAR_SCREEN=yes
+
+# Where single-file programs (AppImages, executables, scripts) are installed.
+BIN_DIR=~/.local/bin
+
+# Remember GitHub's answers between runs, so unchanged data is cheap (yes or no).
+CACHE=yes
+
+# Reuse your GitHub CLI login ("gh auth login") for API requests (yes or no).
+# Logged-in requests have a much higher rate limit, and unchanged answers cost nothing.
+USE_GH_AUTH=no
 EOF
 }
 
@@ -158,7 +186,21 @@ init_config() {
     done
     shopt -u nullglob
     [[ -f $SETTINGS_FILE ]] || write_default_settings
-    parse_conf "$SETTINGS_FILE" "DOWNLOAD_DIR CLEAR_SCREEN"
+    parse_conf "$SETTINGS_FILE" "$SETTINGS_KEYS"
+    setup_api_token
+    if cache_enabled && [[ -d $CACHE_DIR ]]; then
+        find "$CACHE_DIR" -type f -mtime +30 -delete 2>/dev/null || true
+    fi
+}
+
+is_yes() { case ${1,,} in yes|true|on|1) return 0 ;; esac; return 1; }
+cache_enabled() { case ${CACHE,,} in no|false|off|0) return 1 ;; esac; return 0; }
+
+setup_api_token() {  # GITHUB_TOKEN wins; otherwise optionally borrow the GitHub CLI's login
+    API_TOKEN=${GITHUB_TOKEN:-}
+    if [[ -z $API_TOKEN ]] && is_yes "$USE_GH_AUTH" && command -v gh >/dev/null; then
+        API_TOKEN=$(gh auth token 2>/dev/null || true)
+    fi
 }
 
 # ---------- config parsing ----------
@@ -190,7 +232,7 @@ parse_conf() {  # parse_conf <file> "<ALLOWED KEYS>"
 }
 
 # ---------- tracked programs ----------
-APP_KEYS="NAME SOURCE REPO TAG_PREFIX ASSET_REGEX INSTALL PKG VERIFY_CHECKSUM"
+APP_KEYS="NAME SOURCE REPO TAG_PREFIX ASSET_REGEX INSTALL PKG VERIFY_CHECKSUM BIN_NAME DEST_DIR"
 
 list_app_ids() {
     local f id
@@ -211,7 +253,7 @@ load_app() {
         return 1
     fi
     NAME="$id"; SOURCE="github"; REPO=""; TAG_PREFIX=""; ASSET_REGEX=""
-    INSTALL="rpm"; PKG="$id"; VERIFY_CHECKSUM="auto"
+    INSTALL="rpm"; PKG="$id"; VERIFY_CHECKSUM="auto"; BIN_NAME="$id"; DEST_DIR=""; APP_ID="$id"
     parse_conf "$file" "$APP_KEYS"
 
     local bad=""
@@ -222,6 +264,10 @@ load_app() {
                                                           || bad="INSTALL '${INSTALL}' is not supported"
     declare -F "${SOURCE}_releases" >/dev/null 2>&1       || bad="SOURCE '${SOURCE}' is not supported"
     [[ $VERIFY_CHECKSUM =~ ^(auto|required|skip)$ ]]      || bad="VERIFY_CHECKSUM must be auto, required or skip"
+    if [[ $INSTALL == binary ]]; then
+        [[ $BIN_NAME =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]  || bad="BIN_NAME is missing or has invalid characters"
+        [[ -z $DEST_DIR || $DEST_DIR == /* ]]             || bad="DEST_DIR must be an absolute path"
+    fi
     if [[ -n $bad ]]; then
         err "${id}: ${bad} (${file})"
         return 1
@@ -229,22 +275,64 @@ load_app() {
 }
 
 # ---------- GitHub ----------
-gh_api() {  # gh_api <path> -> prints JSON body
-    local path=$1 out code auth=()
-    if [[ -n ${GITHUB_TOKEN:-} ]]; then auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}"); fi
-    out=$(curl -sSL "${auth[@]}" -H 'Accept: application/vnd.github+json' \
+cache_store() {  # cache_store <body-file> <etag-file> <body> <etag>; best effort, never fails the caller
+    local cfile=$1 efile=$2 tmp
+    mkdir -p -m 700 "$CACHE_DIR" 2>/dev/null || return 0
+    rm -f "$efile"
+    tmp=$(mktemp "${cfile}.XXXXXX" 2>/dev/null) || return 0
+    if printf '%s' "$3" > "$tmp" && mv -f "$tmp" "$cfile"; then
+        printf '%s\n' "$4" > "$efile" 2>/dev/null || true
+    else
+        rm -f "$tmp"
+    fi
+    return 0
+}
+
+# Asks GitHub for <path>. Answers are cached with their ETag, and later requests ask "has this
+# changed?". An unchanged answer (304) is fast, and free of your rate limit when you are
+# logged in (GITHUB_TOKEN or USE_GH_AUTH). Out of quota, the last saved answer is used.
+gh_api() {  # gh_api <path> -> prints the JSON body
+    local path=$1 out code hdrf key cfile="" efile="" etag="" rc=0 cached=0 cond=() auth=()
+    if [[ -n $API_TOKEN ]]; then auth=(-H "Authorization: Bearer ${API_TOKEN}"); fi
+    if cache_enabled; then
+        key=$(printf '%s' "$path" | sha256sum | cut -c1-40)
+        cfile="${CACHE_DIR}/${key}.json"; efile="${CACHE_DIR}/${key}.etag"
+        if [[ -f $cfile && -f $efile ]]; then
+            etag=$(<"$efile")
+            if [[ -n $etag ]]; then cached=1; cond=(-H "If-None-Match: ${etag}"); fi
+        fi
+    fi
+    hdrf=$(mktemp "${TMPDIR:-/tmp}/${TOOL_NAME}-hdr.XXXXXX") || hdrf=/dev/null
+    out=$(curl -sSL "${auth[@]}" "${cond[@]}" -D "$hdrf" -H 'Accept: application/vnd.github+json' \
                -w $'\n%{http_code}' "https://api.github.com/${path}") || {
+        if [[ $hdrf != /dev/null ]]; then rm -f "$hdrf"; fi
         err "Could not reach GitHub (network problem?)"
         return 1
     }
     code=${out##*$'\n'}
     out=${out%$'\n'*}
     case $code in
-        200)     printf '%s' "$out" ;;
-        403|429) err "GitHub refused the request (API rate limit? set GITHUB_TOKEN to raise it)"; return 1 ;;
-        404)     err "Not found on GitHub: ${path%%\?*}"; return 1 ;;
-        *)       err "GitHub API returned HTTP ${code} for ${path%%\?*}"; return 1 ;;
+        200)
+            printf '%s' "$out"
+            if [[ -n $cfile ]]; then
+                etag=$(awk 'tolower($1) == "etag:" { sub(/^[^:]*:[ \t]*/, ""); sub(/\r$/, ""); v = $0 } END { print v }' "$hdrf" 2>/dev/null || true)
+                if [[ -n $etag ]]; then cache_store "$cfile" "$efile" "$out" "$etag"; fi
+            fi ;;
+        304)
+            if [[ $cached -eq 1 ]]; then cat "$cfile"; else err "Unexpected 'not modified' reply from GitHub."; rc=1; fi ;;
+        403|429)
+            if [[ $cached -eq 1 ]]; then
+                warn "GitHub's API limit was reached; using the last saved data for ${path%%\?*}."
+                cat "$cfile"
+            else
+                err "GitHub refused the request (API rate limit? set GITHUB_TOKEN, or USE_GH_AUTH=yes if you use the gh CLI)"
+                rc=1
+            fi ;;
+        404) err "Not found on GitHub: ${path%%\?*}"; rc=1 ;;
+        *)   err "GitHub API returned HTTP ${code} for ${path%%\?*}"; rc=1 ;;
     esac
+    if [[ $hdrf != /dev/null ]]; then rm -f "$hdrf"; fi
+    return $rc
 }
 
 # Prints normalized releases: [{tag, draft, prerelease, date, assets:[{name,url,size,digest}]}]
@@ -329,6 +417,95 @@ install_rpm() {
 }
 
 uninstall_rpm() { sudo dnf remove -y "$PKG"; }
+
+# What each method would do, in words (used by --dry-run and the uninstall prompt)
+install_command_rpm() {  # install_command_rpm <file-name> <installed-version>
+    local verb=upgrade
+    if [[ $2 == none ]]; then verb=install; fi
+    printf 'sudo dnf %s -y %s/%s.XXXXXX/%s' "$verb" "$DOWNLOAD_DIR" "$TOOL_NAME" "$1"
+}
+uninstall_command_rpm() { printf 'sudo dnf remove -y %s' "$PKG"; }
+describe_target_rpm() { printf 'package %s' "$PKG"; }
+
+# ----- "binary": a single file (AppImage, static executable, script) copied into a folder.
+# There is no package database for these, so what was installed is recorded in a small state file.
+binary_dest() { printf '%s/%s' "${DEST_DIR:-$BIN_DIR}" "$BIN_NAME"; }
+state_file() { printf '%s/installed/%s' "$STATE_DIR" "$APP_ID"; }
+
+installed_version_binary() {
+    local dest f v VERSION="" FILE="" INSTALLED_ON=""
+    dest=$(binary_dest); f=$(state_file)
+    if [[ ! -e $dest ]]; then printf 'none'; return 0; fi
+    if [[ -f $f ]]; then
+        parse_conf "$f" "VERSION FILE INSTALLED_ON"
+        if [[ -n $VERSION && $FILE == "$dest" ]]; then printf '%s' "$VERSION"; return 0; fi
+    fi
+    if [[ $BIN_NAME == "$TOOL_NAME" ]]; then   # this tool can read its own version from the script, without running it
+        v=$(sed -n 's/^TOOL_VERSION="\(.*\)"$/\1/p' "$dest" 2>/dev/null | head -n1) || v=""
+        if [[ -n $v ]]; then printf '%s' "$v"; return 0; fi
+    fi
+    printf 'unknown'
+}
+
+installed_date_binary() {
+    local dest f VERSION="" FILE="" INSTALLED_ON=""
+    dest=$(binary_dest); f=$(state_file)
+    [[ -e $dest ]] || return 1
+    if [[ -f $f ]]; then
+        parse_conf "$f" "VERSION FILE INSTALLED_ON"
+        if [[ -n $INSTALLED_ON && $FILE == "$dest" ]]; then printf '%s' "$INSTALLED_ON"; return 0; fi
+    fi
+    date -r "$dest" +%F
+}
+
+looks_like_program() {  # an ELF binary (AppImages are ELF) or a script with a #! line
+    local magic
+    magic=$(head -c 4 "$1" | od -An -tx1 | tr -d ' \n')
+    [[ $magic == 7f454c46 || ${magic:0:4} == 2321 ]]
+}
+
+record_install() {  # record_install <dest>
+    local f; f=$(state_file)
+    mkdir -p "${f%/*}" 2>/dev/null || return 0
+    printf "# Written by %s; records the last install of this program.\nVERSION='%s'\nFILE='%s'\nINSTALLED_ON='%s'\n" \
+        "$TOOL_NAME" "$(clean_value "$LATEST_VER")" "$(clean_value "$1")" "$(date +%F)" > "$f" 2>/dev/null || true
+}
+
+install_binary() {  # install_binary <downloaded-file> <installed-version>
+    local file=$1 dir dest tmp sudo=()
+    dir=${DEST_DIR:-$BIN_DIR}; dest="${dir}/${BIN_NAME}"; tmp="${dest}.${TOOL_NAME}-new"
+    if ! looks_like_program "$file"; then
+        err "${LATEST_NAME} doesn't look like a program (not an ELF binary, AppImage or script). It may be an archive; ${TOOL_NAME} only installs single-file programs."
+        return 1
+    fi
+    mkdir -p "$dir" 2>/dev/null || true
+    if [[ ! -w $dir ]]; then
+        sudo=(sudo)
+        info "${dir} isn't writable by you; using sudo."
+        "${sudo[@]}" mkdir -p "$dir" || return 1
+    fi
+    # install beside the target, then rename: replaces a running program safely
+    "${sudo[@]}" install -m 755 "$file" "$tmp" || return 1
+    "${sudo[@]}" mv -f "$tmp" "$dest" || { "${sudo[@]}" rm -f "$tmp"; return 1; }
+    record_install "$dest"
+    case ":${PATH}:" in *":${dir}:"*) ;; *) warn "Note: ${dir} is not in your PATH." ;; esac
+}
+
+uninstall_binary() {
+    local dest sudo=()
+    dest=$(binary_dest)
+    if [[ ! -w ${dest%/*} ]]; then sudo=(sudo); fi
+    "${sudo[@]}" rm -f "$dest" || return 1
+    rm -f "$(state_file)"
+}
+
+install_command_binary() {  # install_command_binary <file-name> <installed-version>
+    local dir=${DEST_DIR:-$BIN_DIR} pre=""
+    if [[ ! -w $dir ]]; then pre="sudo "; fi
+    printf '%sinstall -m 755 <downloaded %s> %s' "$pre" "$1" "$(binary_dest)"
+}
+uninstall_command_binary() { printf 'rm %s' "$(binary_dest)"; }
+describe_target_binary() { binary_dest; }
 
 package_name_rpm() { rpm -qp --qf '%{NAME}' "$1" 2>/dev/null; }
 
@@ -586,6 +763,33 @@ download_file() {  # download_file <url> <dest> [expected-bytes]; draws a bar wh
     return $rc
 }
 
+describe_checksum() {  # what verification would be possible for the chosen file
+    local first
+    if [[ $LATEST_DIGEST == *:* ]]; then
+        printf '%s digest published by GitHub' "${LATEST_DIGEST%%:*}"
+        return 0
+    fi
+    first=$(checksum_candidates | head -n1) || first=""
+    if [[ -n $first ]]; then
+        printf 'checksum file "%s" (fetched and checked when installing)' "${first##*/}"
+        return 0
+    fi
+    case $VERIFY_CHECKSUM in
+        required) printf 'none published; the install would be refused (VERIFY_CHECKSUM=required)' ;;
+        skip)     printf 'none published; verification is turned off (VERIFY_CHECKSUM=skip)' ;;
+        *)        printf 'none published; you would be asked before installing' ;;
+    esac
+}
+
+describe_plan() {  # describe_plan <installed-version>
+    local size=""
+    if ((LATEST_SIZE > 0)); then size=" ($(fmt_size "$LATEST_SIZE"))"; fi
+    info "  File:      ${LATEST_NAME}${size}"
+    info "  From:      ${LATEST_URL}"
+    info "  Checksum:  $(describe_checksum)"
+    info "  Would run: $("install_command_${INSTALL}" "$LATEST_NAME" "$1")"
+}
+
 _download_and_install() {  # _download_and_install <id> <installed-version>; returns 3 = nothing to do
     local id=$1 installed=$2 dest="${TMP_DIR}/${LATEST_NAME}" real="" after
     if ((LATEST_SIZE > 0)); then
@@ -610,6 +814,7 @@ _download_and_install() {  # _download_and_install <id> <installed-version>; ret
     fi
 
     "install_${INSTALL}" "$dest" "$installed" || { err "Install failed."; return 1; }
+    if [[ $INSTALL == binary ]]; then ST_INSTALLED[$id]=$LATEST_VER; return 0; fi
 
     # Don't trust the installer's exit code alone: confirm something actually changed.
     after=$(get_installed_version) || after="?"
@@ -639,6 +844,7 @@ update_app() {
     installed=${ST_INSTALLED[$id]}
     from=$installed; [[ $installed == none ]] && from="not installed"
     info "${C_BLD}${NAME}${C_RST}: ${from} -> ${LATEST_VER}${LATEST_DATE:+  (released ${LATEST_DATE})}"
+    if [[ $DRY_RUN -eq 1 ]]; then describe_plan "$installed"; return 0; fi
     if [[ $SKIP_UPDATE_CONFIRM -eq 0 ]]; then
         confirm "Proceed?" n || { info "Skipped ${id}."; return 0; }
     fi
@@ -649,7 +855,8 @@ update_app() {
     _download_and_install "$id" "$installed" || rc=$?
     cleanup
     case $rc in
-        0) ok "${id} is now at ${ST_INSTALLED[$id]} (installed $(get_installed_date))." ;;
+        0) ok "${id} is now at ${ST_INSTALLED[$id]} (installed $(get_installed_date))."
+           if [[ $INSTALL == binary && $BIN_NAME == "$TOOL_NAME" ]]; then info "Restart ${TOOL_NAME} to run the new version."; fi ;;
         3) ok "${id} is already at ${ST_INSTALLED[$id]} (installed $(get_installed_date)); nothing to install." ;;
         *) err "${id}: not updated."; return 1 ;;
     esac
@@ -674,7 +881,7 @@ update_all() {
     fi
     info
     info "Will update: ${todo[*]}"
-    confirm "Proceed with all?" n || return 0
+    if [[ $DRY_RUN -eq 0 ]]; then confirm "Proceed with all?" n || return 0; fi
     SKIP_UPDATE_CONFIRM=1
     for id in "${todo[@]}"; do
         update_app "$id" || failed+=("$id")
@@ -800,42 +1007,92 @@ wizard_pick_release() {  # sets W_RELEASE (json) and W_TAGNAME
     W_RELEASE=$(jq -c --arg t "$t" '[.[] | select(.tag == $t)] | first // empty' <<< "$releases")
 }
 
-W_ASSET=""; W_ASSET_URL=""; W_ASSET_SIZE=0
-list_rpm_assets() {  # list_rpm_assets <arch-regex or ""> -> "name<TAB>size<TAB>url" lines
-    jq -r --arg re "$1" '.assets[]
-        | select(.name | test("\\.rpm$"))
-        | select(($re == "") or (.name | test($re; "i")))
-        | [.name, (.size | tostring), .url] | join("\t")' <<< "$W_RELEASE"
+W_KIND="rpm"; W_ASSET=""; W_ASSET_URL=""; W_ASSET_SIZE=0
+
+# Used to sort a release's files into "installable by relup" and the rest (matched against lowercase names)
+ANY_ARCH_RE='x86[_-]64|amd64|x64|aarch64|arm[_-]?64|armv[0-9]|armhf|i[3-6]86|riscv|ppc64|s390x'
+FOREIGN_OS_RE='darwin|macos|osx|windows|win32|win64|android|freebsd|openbsd|netbsd'
+NON_PROGRAM_RE='\.(rpm|deb|zip|tar|tgz|gz|xz|bz2|zst|7z|sha256|sha512|sha256sum|sha512sum|sum|sums|sig|asc|pem|minisig|cert|bundle|sbom|spdx|json|ya?ml|toml|txt|md|html|pdf|dmg|pkg|exe|msi|apk|aab|ipa|snap|flatpak|appx|msix|whl|jar|nupkg|zsync|blockmap|so|dll|dylib|a|lib|log)$|sha256|sha512|checksum'
+
+all_assets() {  # "name<TAB>size<TAB>url" for every file in the chosen release
+    jq -r '.assets[] | [.name, (.size | tostring), .url] | join("\t")' <<< "$W_RELEASE"
 }
 
-wizard_pick_asset() {  # sets W_ASSET, W_ASSET_URL, W_ASSET_SIZE
-    local host_label host_re other_label other_re re rows=() row name size url i=0
-    case $(uname -m) in
-        x86_64)        host_label="x86_64";          host_re='x86[_-]64|amd64|x64'
-                       other_label="arm64 / aarch64"; other_re='aarch64|arm[_-]?64' ;;
-        aarch64|arm64) host_label="arm64 / aarch64"; host_re='aarch64|arm[_-]?64'
-                       other_label="x86_64";          other_re='x86[_-]64|amd64|x64' ;;
-        *)             host_label=$(uname -m);       host_re=$(uname -m)
-                       other_label="x86_64";          other_re='x86[_-]64|amd64|x64' ;;
-    esac
-    info
-    info "Which build do you want?"
-    info "  1) ${host_label} (this machine)"
-    info "  2) ${other_label}"
-    info "  3) Show every .rpm file in the release"
-    ask "Choice" "1"
-    case $ANSWER in 2) re=$other_re ;; 3) re="" ;; *) re=$host_re ;; esac
+# asset_rows <rpm|binary> <arch-regex or "">: the files of that kind. For "binary" that means files
+# that are not archives, packages or checksums, and (when the release names a platform) Linux ones only.
+asset_rows() {
+    local kind=$1 arch=$2 row lname linux=0 pool=()
+    while IFS= read -r row; do
+        [[ -n $row ]] || continue
+        lname=${row%%$'\t'*}; lname=${lname,,}
+        if [[ $kind == rpm ]]; then
+            [[ $lname == *.rpm ]] || continue
+        elif [[ $lname =~ $NON_PROGRAM_RE ]]; then
+            continue
+        fi
+        pool+=("$row")
+        if [[ $lname == *linux* ]]; then linux=1; fi
+    done < <(all_assets)
+    for row in "${pool[@]}"; do
+        lname=${row%%$'\t'*}; lname=${lname,,}
+        if [[ $kind == binary ]]; then
+            if ((linux)); then
+                [[ $lname == *linux* ]] || continue
+            elif [[ $lname =~ $FOREIGN_OS_RE ]]; then
+                continue
+            fi
+        fi
+        if [[ -n $arch && ! $lname =~ $arch ]]; then continue; fi
+        printf '%s\n' "$row"
+    done
+}
 
-    mapfile -t rows < <(list_rpm_assets "$re")
-    if ((${#rows[@]} == 0)) && [[ -n $re ]]; then
-        mapfile -t rows < <(list_rpm_assets "")
-        if ((${#rows[@]})); then warn "No .rpm file in that release mentions that architecture; showing all .rpm files."; fi
-    fi
-    if ((${#rows[@]} == 0)); then
-        err "This release has no .rpm file. ${TOOL_NAME} can only install .rpm packages for now. Files in the release:"
+wizard_pick_asset() {  # sets W_KIND, W_ASSET, W_ASSET_URL, W_ASSET_SIZE
+    local n_rpm n_bin n_arch host_label host_re other_label other_re re="" rows=() row name size url i=0
+    n_rpm=$(asset_rows rpm "" | grep -c . || true)
+    n_bin=$(asset_rows binary "" | grep -c . || true)
+    if ((n_rpm > 0 && n_bin > 0)); then
+        info
+        info "This release has two kinds of files you could install:"
+        info "  1) System package (.rpm), installed with dnf"
+        info "  2) Single-file program (AppImage or executable), installed to ${BIN_DIR}"
+        ask "Choice" "1"
+        if [[ $ANSWER == 2 ]]; then W_KIND=binary; else W_KIND=rpm; fi
+    elif ((n_rpm > 0)); then
+        W_KIND=rpm
+    elif ((n_bin > 0)); then
+        W_KIND=binary
+    else
+        err "Nothing in this release can be installed by ${TOOL_NAME}. It handles .rpm packages and single-file programs (AppImage, executable, script), not archives or other formats. Files in the release:"
         jq -r '.assets[] | "  " + .name' <<< "$W_RELEASE" >&2
         return 1
     fi
+
+    n_arch=$(asset_rows "$W_KIND" "$ANY_ARCH_RE" | grep -c . || true)
+    if ((n_arch > 0)); then   # only ask when the file names actually mention an architecture
+        case $(uname -m) in
+            x86_64)        host_label="x86_64";          host_re='x86[_-]64|amd64|x64'
+                           other_label="arm64 / aarch64"; other_re='aarch64|arm[_-]?64' ;;
+            aarch64|arm64) host_label="arm64 / aarch64"; host_re='aarch64|arm[_-]?64'
+                           other_label="x86_64";          other_re='x86[_-]64|amd64|x64' ;;
+            *)             host_label=$(uname -m);       host_re=$(uname -m)
+                           other_label="x86_64";          other_re='x86[_-]64|amd64|x64' ;;
+        esac
+        info
+        info "Which build do you want?"
+        info "  1) ${host_label} (this machine)"
+        info "  2) ${other_label}"
+        info "  3) Show every matching file in the release"
+        ask "Choice" "1"
+        case $ANSWER in 2) re=$other_re ;; 3) re="" ;; *) re=$host_re ;; esac
+    fi
+
+    mapfile -t rows < <(asset_rows "$W_KIND" "$re")
+    if ((${#rows[@]} == 0)) && [[ -n $re ]]; then
+        mapfile -t rows < <(asset_rows "$W_KIND" "")
+        if ((${#rows[@]})); then warn "No file in that release mentions that architecture; showing all matching files."; fi
+    fi
+    ((${#rows[@]})) || { err "No matching file found in this release."; return 1; }
     if ((${#rows[@]} == 1)); then
         IFS=$'\t' read -r name size url <<< "${rows[0]}"
         info "File: ${name}"
@@ -880,14 +1137,16 @@ detect_rpm_pkg() {  # detect_rpm_pkg <file> <url> -> sets DETECTED_PKG; DETECT_S
     if command -v rpm >/dev/null && rpm -q "$DETECTED_PKG" >/dev/null 2>&1; then DETECT_SURE=1; fi
 }
 
-default_name_from_asset() {  # LocalSend-1.19.0-linux-x86-64.rpm -> LocalSend ; ente-auth-v4.4.27-x86_64.rpm -> Ente Auth
-    local base=${1%.rpm}
+default_name_from_asset() {  # LocalSend-1.19.0-linux-x86-64.rpm -> LocalSend ; tool-linux-amd64 -> Tool
+    local base=$1
+    base=${base%.rpm}; base=${base%.[Aa]pp[Ii]mage}
     base=$(sed -E 's/[-_.]v?[0-9].*$//' <<< "$base")
+    base=$(sed -E 's/[-_.](linux|gnu|musl|static|amd64|x86[_-]64|x64|arm64|aarch64|armv[0-9a-z]+|i[3-6]86)([-_.].*)?$//I' <<< "$base")
     pretty_name "$base"
 }
 
 add_program() {  # add_program [url|owner/repo]
-    local input=${1:-} prefix version regex name id file pkg installed status
+    local input=${1:-} prefix version regex name id file pkg="" installed status target
     info "${C_BLD}Add a program${C_RST}   (source: GitHub)"
     if [[ -z $input ]]; then
         info "Enter a GitHub URL, owner/repo, or just a username to browse their repos."
@@ -917,25 +1176,33 @@ add_program() {  # add_program [url|owner/repo]
     [[ -n $name ]] || name=$(pretty_name "${W_REPO#*/}")
     id=$(slugify "$name")
     [[ -n $id ]] || { err "Could not derive a name for this program."; return 1; }
-    info
-    info "Reading package details..."
-    detect_rpm_pkg "$W_ASSET" "$W_ASSET_URL"
-    pkg=$DETECTED_PKG
-    INSTALL="rpm"; PKG=$pkg
-    installed=$(get_installed_version) || installed="none"
-    if [[ $installed == none ]]; then
-        status="not installed"
+    INSTALL=$W_KIND; PKG=$id; BIN_NAME=$id; DEST_DIR=""; APP_ID=$id
+    if [[ $W_KIND == rpm ]]; then
+        info
+        info "Reading package details..."
+        detect_rpm_pkg "$W_ASSET" "$W_ASSET_URL"
+        pkg=$DETECTED_PKG; PKG=$pkg
+        target="  Package:     ${pkg}"
     else
-        status="installed: ${installed}, since $(get_installed_date)"
+        target="  Installs to: $(binary_dest)"
     fi
-    if [[ $DETECT_SURE -eq 0 ]]; then status+="; name is a guess and will be double-checked on install"; fi
+    installed=$(get_installed_version) || installed="none"
+    case $installed in
+        none)    status="not installed" ;;
+        unknown) status="a file is already there; its version is unknown, so it will be replaced on the first update" ;;
+        *)       status="installed: ${installed}, since $(get_installed_date)" ;;
+    esac
+    if [[ $W_KIND == rpm && $DETECT_SURE -eq 0 ]]; then status+="; name is a guess and will be double-checked on install"; fi
 
     info
     info "${C_BLD}Ready to track:${C_RST}"
     info "  Program:     ${name}   (id: ${id})"
     info "  Repository:  ${W_REPO}"
     info "  File:        ${W_ASSET}"
-    info "  Package:     ${pkg}   [${status}]"
+    info "${target}   [${status}]"
+    if [[ $W_KIND == binary ]]; then
+        case ":${PATH}:" in *":${DEST_DIR:-$BIN_DIR}:"*) ;; *) warn "  Note: ${DEST_DIR:-$BIN_DIR} is not in your PATH." ;; esac
+    fi
     file="${APPS_DIR}/${id}.conf"
     if [[ -f $file ]]; then warn "  Note: ${id}.conf already exists and would be replaced."; fi
     confirm_strict "Track this program?" y || { info "Cancelled."; return 1; }
@@ -943,7 +1210,8 @@ add_program() {  # add_program [url|owner/repo]
         confirm_strict "Replace the existing ${id}.conf?" n || { info "Cancelled."; return 1; }
     fi
 
-    cat > "$file" <<CONF
+    {
+        cat <<CONF
 # Added by ${TOOL_NAME} ${TOOL_VERSION} on $(date +%F)
 # Read as KEY='value' data (nothing in this file is executed). No inline comments.
 
@@ -957,13 +1225,29 @@ REPO='$(clean_value "$W_REPO")'
 TAG_PREFIX='$(clean_value "$prefix")'
 # Regex the release file name must match
 ASSET_REGEX='$(clean_value "$regex")'
-# How it is installed (supported: rpm)
+CONF
+        if [[ $W_KIND == rpm ]]; then
+            cat <<CONF
+# How it is installed: rpm (system package, via dnf) or binary (single file copied into a folder)
 INSTALL='rpm'
 # Package name known to rpm (check with: rpm -q <name>)
 PKG='$(clean_value "$pkg")'
+CONF
+        else
+            cat <<CONF
+# How it is installed: rpm (system package, via dnf) or binary (single file copied into a folder)
+INSTALL='binary'
+# Name of the installed command. It goes into BIN_DIR from settings.conf unless DEST_DIR is set.
+BIN_NAME='$(clean_value "$BIN_NAME")'
+# Optional: install somewhere else (absolute path; sudo is used if the folder isn't writable)
+#DEST_DIR='/usr/local/bin'
+CONF
+        fi
+        cat <<CONF
 # Checksum policy: auto (verify when published, otherwise ask), required, or skip
 VERIFY_CHECKSUM='auto'
 CONF
+    } > "$file"
     ok "Saved ${file}"
     STATUS_FRESH=0
 
@@ -1003,7 +1287,8 @@ edit_app() {
 
 edit_settings() {
     edit_file "$SETTINGS_FILE" || return 1
-    parse_conf "$SETTINGS_FILE" "DOWNLOAD_DIR CLEAR_SCREEN"
+    parse_conf "$SETTINGS_FILE" "$SETTINGS_KEYS"
+    setup_api_token
     ok "Settings reloaded."
 }
 
@@ -1011,7 +1296,7 @@ remove_app() {
     local id=$1 installed
     load_app "$id" || return 1
     installed=$(get_installed_version) || installed="?"
-    info "${C_BLD}${NAME}${C_RST} (${id}) — package ${PKG}, installed version: ${installed}"
+    info "${C_BLD}${NAME}${C_RST} (${id}) — $("describe_target_${INSTALL}"), installed version: ${installed}"
     info "  1) Uninstall the program AND delete its ${TOOL_NAME} config"
     info "  2) Only delete the ${TOOL_NAME} config (stop tracking; program stays installed)"
     info "  c) Cancel"
@@ -1019,9 +1304,9 @@ remove_app() {
     case $ANSWER in
         1)
             if [[ $installed == none ]]; then
-                info "${PKG} is not installed; nothing to uninstall."
+                info "Nothing is installed; nothing to uninstall."
             else
-                confirm_strict "This runs the ${INSTALL} uninstall for '${PKG}'. Continue?" n || { info "Cancelled."; return 0; }
+                confirm_strict "This will run: $("uninstall_command_${INSTALL}"). Continue?" n || { info "Cancelled."; return 0; }
                 "uninstall_${INSTALL}" || { err "Uninstall failed; config kept."; return 1; }
             fi
             rm -f "${APPS_DIR}/${id}.conf"
@@ -1129,6 +1414,7 @@ main() {
             -h|--help)    usage; exit 0 ;;
             -V|--version) echo "${TOOL_NAME} ${TOOL_VERSION}"; exit 0 ;;
             -y|--yes)     ASSUME_YES=1 ;;
+            -n|--dry-run) DRY_RUN=1 ;;
             *)            args+=("$a") ;;
         esac
     done
@@ -1138,6 +1424,11 @@ main() {
         help|list|check|config)  (($# <= 1)) || { err "Unexpected argument: $2"; exit 1; } ;;
         add|edit|remove|update)  (($# <= 2)) || { err "Unexpected argument: $3"; exit 1; } ;;
     esac
+
+    if [[ $DRY_RUN -eq 1 && ${1:-} != update ]]; then
+        err "--dry-run only applies to 'update' (try: ${TOOL_NAME} update --all --dry-run)"
+        exit 1
+    fi
 
     check_deps
     init_config
@@ -1152,9 +1443,10 @@ main() {
             require_apps
             case ${2:-} in
                 --all) update_all ;;
-                "")    err "Usage: ${TOOL_NAME} update <id> | --all"; exit 1 ;;
+                "")    err "Usage: ${TOOL_NAME} update <id> | --all [--dry-run]"; exit 1 ;;
                 *)     update_app "$2" ;;
-            esac ;;
+            esac
+            if [[ $DRY_RUN -eq 1 ]]; then info; info "Dry run: nothing was downloaded or installed."; fi ;;
         edit)   [[ -n ${2:-} ]] || { err "Usage: ${TOOL_NAME} edit <id>"; exit 1; }; edit_app "$2" ;;
         remove) [[ -n ${2:-} ]] || { err "Usage: ${TOOL_NAME} remove <id>"; exit 1; }; remove_app "$2" ;;
         config) edit_settings ;;
