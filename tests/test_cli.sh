@@ -216,6 +216,22 @@ test_add_asks_again_after_invalid_number() {
     assert_exists "$APPS/tool.conf"
 }
 
+test_add_recognises_existing_copy() {        # the Caligula case from the live test
+    local r=ifd3f/caligula
+    set_releases $r \
+        "$(mk_release v0.5.0 "$(mk_asset $r v0.5.0 caligula-x86_64-linux "$(fake_elf 0.5.0)")")" \
+        "$(mk_release v0.4.0 --date 2026-01-01 "$(mk_asset $r v0.4.0 caligula-x86_64-linux "$(fake_elf 0.4.0)")")"
+    printf %s "$(fake_elf 0.5.0)" > "$BIN/caligula"   # byte-identical to the release file
+    run cli add ifd3f/caligula <<< $'1\n1\ny'   # release, architecture, track
+    assert_status 0
+    assert_contains "Installs to: $BIN/caligula   [installed: 0.5.0 (recognised from its checksum), since"
+    assert_contains "-> up to date"
+    assert_not_contains "Proceed?"
+    assert_not_contains "Replace"
+    assert_file_contains "$STATE/caligula" "VERSION='0.5.0'"
+    [[ -z $(download_requests) ]] || fail "something was downloaded:\n$(download_requests)"
+}
+
 test_add_without_installable_files() {
     local r=acme/src
     set_releases $r "$(mk_release v1.0.0 "$(mk_asset $r v1.0.0 src-1.0.0.tar.gz "tgz")" "$(mk_asset $r v1.0.0 src-1.0.0.zip "zip")")"

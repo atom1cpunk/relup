@@ -122,3 +122,61 @@ test_self_tracking_reads_own_version() {
     assert_contains "Restart relup to run the new version."
     assert_file_contains "$BIN/relup" 'TOOL_VERSION="9.9.9"'
 }
+
+# ---------- recognising a copy relup didn't install (by its checksum) ----------
+# Like Caligula: the same file name in every release, a GitHub digest for each.
+two_release_bin_app() {  # two_release_bin_app <id> [digest-mode]
+    local id=$1 r="acme/$1"
+    set_releases "$r" \
+        "$(mk_release v1.1.0 "$(mk_asset "$r" v1.1.0 "$id-x86_64-linux" "$(fake_elf 1.1.0)" "${2:-auto}")")" \
+        "$(mk_release v1.0.0 --date 2026-10-01 "$(mk_asset "$r" v1.0.0 "$id-x86_64-linux" "$(fake_elf 1.0.0)" "${2:-auto}")")"
+    app_conf "$id" REPO="$r" TAG_PREFIX=v "ASSET_REGEX=^$id-x86_64-linux\$" INSTALL=binary BIN_NAME="$id"
+}
+
+test_copy_of_latest_release_is_recognised() {
+    two_release_bin_app tool
+    printf %s "$(fake_elf 1.1.0)" > "$BIN/tool"; touch -d 2026-11-01 "$BIN/tool"   # byte-identical to the release file
+    run cli check
+    assert_line '^1 +tool +1\.1\.0 +1\.1\.0 +2026-11-20 +2026-11-01 +up to date$'
+    assert_file_contains "$STATE/tool" "VERSION='1.1.0'"
+    assert_file_contains "$STATE/tool" "INSTALLED_ON='2026-11-01'"
+    [[ -z $(download_requests) ]] || fail "something was downloaded"
+    run cli list                                  # offline: remembered from now on
+    assert_line '^1 +tool .* 1\.1\.0 +2026-11-01$'
+    run cli -y update tool
+    assert_contains "tool is already up to date"
+    assert_no_sudo
+}
+
+test_copy_of_older_release_is_recognised_and_updated() {
+    two_release_bin_app tool
+    printf %s "$(fake_elf 1.0.0)" > "$BIN/tool"
+    run cli check
+    assert_line '^1 +tool +1\.0\.0 +1\.1\.0 .*update available$'
+    run cli -y update tool
+    assert_status 0
+    assert_contains "tool: 1.0.0 -> 1.1.0"
+    assert_eq "$(cat "$BIN/tool")" "$(fake_elf 1.1.0)" "installed file"
+    assert_file_contains "$STATE/tool" "VERSION='1.1.0'"
+}
+
+test_unrecognised_copy_asks_to_replace() {
+    two_release_bin_app tool
+    printf '#!/bin/sh\necho self-built\n' > "$BIN/tool"
+    run cli check
+    assert_line '^1 +tool +unknown +1\.1\.0 .*update available$'
+    assert_missing "$STATE/tool"
+    run cli update tool <<< 'n'
+    assert_contains "tool: a copy relup didn't install (version unknown) -> 1.1.0"
+    assert_contains "Replace $BIN/tool with 1.1.0? [y/N]"
+    assert_contains "Skipped tool."
+    assert_eq "$(cat "$BIN/tool")" $'#!/bin/sh\necho self-built' "file untouched"
+}
+
+test_copy_without_published_digests_stays_unknown() {
+    two_release_bin_app tool none
+    printf %s "$(fake_elf 1.1.0)" > "$BIN/tool"
+    run cli check
+    assert_line '^1 +tool +unknown +1\.1\.0 .*update available$'
+    assert_missing "$STATE/tool"
+}

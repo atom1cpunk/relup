@@ -13,6 +13,7 @@ All notable changes to `relup` are listed here. The format follows [Keep a Chang
 - **Settings** `BIN_DIR`, `CACHE` and `CLEAR_SCREEN` (turn off screen clearing).
 - **New settings reach existing settings files.** When `settings.conf` lacks settings added by a newer version, they are appended commented out with their explanation, and you are told once. Values you have set are never changed.
 - Program config keys `BIN_NAME` and `DEST_DIR` for single-file programs.
+- **Recognising single-file programs you installed yourself.** When a file relup didn't install is already at the destination, its SHA-256 is compared with the checksums GitHub publishes for recent releases. A match gives its version, which is remembered, so a program you downloaded by hand counts as installed (and up to date, if it is the latest) instead of `unknown` with an offer to install it. A copy that matches nothing is still `unknown`, and relup now asks "Replace … with X?" instead of "Proceed?".
 - When a release has both an `.rpm` and an AppImage or executable, the wizard asks which kind to track. It hides archives, packages for other systems, checksum and signature files, and other operating systems' builds.
 - Automated tests (`tests/run.sh`), using the real `jq` with fake `curl`, `rpm` and `sudo`.
 

@@ -443,26 +443,33 @@ github_releases() {  # github_releases <owner/repo> [page]
 
 get_releases() { "${SOURCE}_releases" "$@"; }
 
-# Sets LATEST_* for the loaded app. Prints the matching release as JSON.
+# jq program: the published releases (newest first) whose tag starts with $p and that have a file
+# matching $re, each with that file as .asset. Used for picking the latest release and for
+# recognising a file relup didn't install by its checksum.
+# shellcheck disable=SC2016  # $p, $re, $rel and $a are jq variables, not shell ones
+MATCHING_RELEASES_JQ='[ .[]
+    | select(.draft == false and .prerelease == false)
+    | select(.tag | startswith($p))
+    | . as $rel
+    | ([ $rel.assets[] | select(.name | test($re)) ] | first) as $a
+    | select($a != null)
+    | { tag: $rel.tag,
+        version: ($rel.tag | ltrimstr($p) | ltrimstr("v")),
+        date: $rel.date,
+        asset: $a,
+        assets: $rel.assets } ]'
+
+# Prints the latest matching release as JSON, plus .known: the version and published digest of the
+# matching file in every matching release on that page (for identify_by_checksum).
 find_latest() {
     local releases result page count
     # Busy repos can bury a product's newest release past page 1, so look at up to 3 pages,
     # stopping as soon as a match is found or a page comes back short (no more releases).
     for page in 1 2 3; do
         releases=$(get_releases "$REPO" "$page") || return 1
-        result=$(jq -c --arg p "$TAG_PREFIX" --arg re "$ASSET_REGEX" '
-            [ .[]
-              | select(.draft == false and .prerelease == false)
-              | select(.tag | startswith($p))
-              | . as $rel
-              | ([ $rel.assets[] | select(.name | test($re)) ] | first) as $a
-              | select($a != null)
-              | { tag: $rel.tag,
-                  version: ($rel.tag | ltrimstr($p) | ltrimstr("v")),
-                  date: $rel.date,
-                  asset: $a,
-                  assets: $rel.assets }
-            ] | first // empty' <<< "$releases") || {
+        result=$(jq -c --arg p "$TAG_PREFIX" --arg re "$ASSET_REGEX" "${MATCHING_RELEASES_JQ}"' as $m
+            | if ($m | length) == 0 then empty
+              else $m[0] + {known: [ $m[] | {version, digest: .asset.digest} ]} end' <<< "$releases") || {
             err "${NAME}: could not evaluate ASSET_REGEX (is it a valid regex?)"
             return 1
         }
@@ -554,11 +561,23 @@ looks_like_program() {  # an ELF binary (AppImages are ELF) or a script with a #
     [[ $magic == 7f454c46 || ${magic:0:4} == 2321 ]]
 }
 
-record_install() {  # record_install <dest>
+record_install() {  # record_install <dest> [version] [date]: defaults are the release just installed, today
     local f; f=$(state_file)
     mkdir -p "${f%/*}" 2>/dev/null || return 0
     printf "# Written by %s; records the last install of this program.\nVERSION='%s'\nFILE='%s'\nINSTALLED_ON='%s'\n" \
-        "$TOOL_NAME" "$(clean_value "$LATEST_VER")" "$(clean_value "$1")" "$(date +%F)" > "$f" 2>/dev/null || true
+        "$TOOL_NAME" "$(clean_value "${2:-$LATEST_VER}")" "$(clean_value "$1")" "${3:-$(date +%F)}" > "$f" 2>/dev/null || true
+}
+
+# A single file that relup didn't install has no recorded version. If its SHA-256 equals the digest
+# GitHub publishes for the matching file of a recent release, it is that release. The file is only
+# read, never run.
+identify_by_checksum() {  # identify_by_checksum <file> <json with .known[]> -> prints the version, or fails
+    local file=$1 sum
+    [[ -f $file && -r $file ]] || return 1
+    sum=$(sha256sum "$file" | cut -d' ' -f1) || return 1
+    [[ $sum =~ ^[0-9a-f]{64}$ ]] || return 1
+    jq -er --arg d "sha256:${sum}" \
+        '[ .known[]? | select((.digest // "" | ascii_downcase) == $d) | .version ] | first // empty' <<< "$2" 2>/dev/null
 }
 
 install_binary() {  # install_binary <downloaded-file> <installed-version>
@@ -668,7 +687,7 @@ version_ge() {  # true when <a> is the same as, or newer than, <b>
 }
 
 refresh_status() {
-    local id=$1 json
+    local id=$1 json v
     ST_INSTALLED[$id]="?"; ST_LATEST[$id]="?"; ST_STATE[$id]="error"; ST_JSON[$id]=""
     ST_RELEASED[$id]="-"; ST_ON[$id]="-"
     load_app "$id" || return 0
@@ -677,6 +696,11 @@ refresh_status() {
     json=$(find_latest) || return 0
     ST_JSON[$id]=$json
     parse_latest "$json"
+    if [[ $INSTALL == binary && ${ST_INSTALLED[$id]} == unknown ]] && v=$(identify_by_checksum "$(binary_dest)" "$json"); then
+        # recognised: record it as if relup had installed it, dated by the file itself
+        record_install "$(binary_dest)" "$v" "$(date -r "$(binary_dest)" +%F)"
+        ST_INSTALLED[$id]=$v; ST_ON[$id]=$(get_installed_date)
+    fi
     ST_LATEST[$id]=$LATEST_VER
     ST_RELEASED[$id]=${LATEST_DATE:-"-"}
     if [[ ${ST_INSTALLED[$id]} == none ]]; then
@@ -943,7 +967,7 @@ _download_and_install() {  # _download_and_install <id> <installed-version>; ret
 }
 
 update_app() {
-    local id=$1 installed from rc=0
+    local id=$1 installed from rc=0 question="Proceed?"
     [[ -n ${ST_STATE[$id]:-} ]] || refresh_status "$id"
     case ${ST_STATE[$id]:-error} in
         error) return 1 ;;
@@ -953,11 +977,15 @@ update_app() {
     parse_latest "${ST_JSON[$id]}"
     installed=${ST_INSTALLED[$id]}
     from=$installed; [[ $installed == none ]] && from="not installed"
+    if [[ $installed == unknown ]]; then
+        from="a copy ${TOOL_NAME} didn't install (version unknown)"
+        question="Replace $("describe_target_${INSTALL}") with ${LATEST_VER}?"
+    fi
     info "${C_BLD}${NAME}${C_RST}: ${from} -> ${LATEST_VER}${LATEST_DATE:+  (released ${LATEST_DATE})}"
     if [[ $DRY_RUN -eq 1 ]]; then describe_plan "$installed"; return 0; fi
     if [[ $SKIP_UPDATE_CONFIRM -eq 0 ]]; then
-        if ! confirm "Proceed?" n; then
-            if ((NO_INPUT)); then err "${id}: not updated (no answer to 'Proceed?'; use -y to run unattended)."; return 1; fi
+        if ! confirm "$question" n; then
+            if ((NO_INPUT)); then err "${id}: not updated (no answer to '${question}'; use -y to run unattended)."; return 1; fi
             info "Skipped ${id}."; return 0
         fi
     fi
@@ -1099,6 +1127,7 @@ wizard_pick_release() {  # sets W_RELEASE (json) and W_TAGNAME
     local releases rows=() row t d c i=0 shown=15
     progress "Looking up releases of ${W_REPO}..."
     releases=$(get_releases "$W_REPO") || return 1
+    W_RELEASES=$releases
     progress_done
     W_RELEASE=""
     if [[ -n $W_TAG ]]; then
@@ -1129,6 +1158,7 @@ wizard_pick_release() {  # sets W_RELEASE (json) and W_TAGNAME
     W_RELEASE=$(jq -c --arg t "$t" '[.[] | select(.tag == $t)] | first // empty' <<< "$releases")
 }
 
+W_RELEASES="[]"
 W_KIND="rpm"; W_ASSET=""; W_ASSET_URL=""; W_ASSET_SIZE=0
 
 # Used to sort a release's files into "installable by relup" and the rest (matched against lowercase names)
@@ -1285,7 +1315,7 @@ default_name_from_asset() {  # LocalSend-1.19.0-linux-x86-64.rpm -> LocalSend ; 
 }
 
 add_program() {  # add_program [url|owner/repo]
-    local input=${1:-} prefix version regex name id file pkg="" installed status target
+    local input=${1:-} prefix version regex name id file pkg="" installed status target v how=""
     info "${C_BLD}Add a program${C_RST}   (source: GitHub)"
     if [[ -z $input ]]; then
         info "Enter a GitHub URL, owner/repo, or just a username to browse their repos."
@@ -1326,10 +1356,15 @@ add_program() {  # add_program [url|owner/repo]
         target="  Installs to: $(binary_dest)"
     fi
     installed=$(get_installed_version) || installed="none"
+    if [[ $W_KIND == binary && $installed == unknown ]] && v=$(identify_by_checksum "$(binary_dest)" \
+            "$(jq -c --arg p "$prefix" --arg re "$regex" "${MATCHING_RELEASES_JQ}"' | {known: [ .[] | {version, digest: .asset.digest} ]}' \
+               <<< "$W_RELEASES" 2>/dev/null)"); then
+        installed=$v; how=" (recognised from its checksum)"
+    fi
     case $installed in
         none)    status="not installed" ;;
-        unknown) status="a file is already there; its version is unknown, so it will be replaced on the first update" ;;
-        *)       status="installed: ${installed}, since $(get_installed_date)" ;;
+        unknown) status="a copy ${TOOL_NAME} didn't install is there; it matches no recent release, so the first update replaces it" ;;
+        *)       status="installed: ${installed}${how}, since $(get_installed_date)" ;;
     esac
     if [[ $W_KIND == rpm && $DETECT_SURE -eq 0 ]]; then status+="; name is a guess and will be double-checked on install"; fi
 
