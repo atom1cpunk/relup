@@ -158,28 +158,60 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The explanation and built-in default of each setting, as written into settings.conf.
+# Keep the defaults here in step with the ones at the top of this script.
+settings_doc() {  # settings_doc <KEY>
+    case $1 in
+        DOWNLOAD_DIR) printf '%s\n' \
+            "# Folder where downloads are staged before installing." \
+            "# A temporary subfolder is created here and removed afterwards." \
+            "#DOWNLOAD_DIR=/tmp" ;;
+        CLEAR_SCREEN) printf '%s\n' \
+            "# Clear the screen before each menu and job (yes or no)." \
+            "#CLEAR_SCREEN=yes" ;;
+        BIN_DIR) printf '%s\n' \
+            "# Where single-file programs (AppImages, executables, scripts) are installed." \
+            "#BIN_DIR=~/.local/bin" ;;
+        CACHE) printf '%s\n' \
+            "# Remember GitHub's answers between runs, so unchanged data is cheap (yes or no)." \
+            "#CACHE=yes" ;;
+        USE_GH_AUTH) printf '%s\n' \
+            "# Reuse your GitHub CLI login (\"gh auth login\") for API requests (yes or no)." \
+            "# Logged-in requests have a much higher rate limit, and unchanged answers cost nothing." \
+            "#USE_GH_AUTH=no" ;;
+    esac
+}
+
+# Every setting starts commented out, so it follows the built-in default (even if a later version
+# changes it). Removing the # makes it the user's own choice, which is never changed.
 write_default_settings() {
-    cat > "$SETTINGS_FILE" <<EOF
-# ${TOOL_NAME} settings
-# Format: KEY=value   (one per line, no inline comments; lines starting with # are ignored)
+    local key
+    {
+        printf '%s\n' "# ${TOOL_NAME} settings" \
+            "# Format: KEY=value   (one per line, no inline comments; lines starting with # are ignored)" \
+            "# Settings that are commented out use ${TOOL_NAME}'s built-in default, shown after the =." \
+            "# To change one, remove the # in front of it and edit the value."
+        for key in $SETTINGS_KEYS; do printf '\n'; settings_doc "$key"; done
+    } > "$SETTINGS_FILE"
+}
 
-# Folder where downloads are staged before installing.
-# A temporary subfolder is created here and removed afterwards.
-DOWNLOAD_DIR=/tmp
-
-# Clear the screen before each menu and job (yes or no).
-CLEAR_SCREEN=yes
-
-# Where single-file programs (AppImages, executables, scripts) are installed.
-BIN_DIR=~/.local/bin
-
-# Remember GitHub's answers between runs, so unchanged data is cheap (yes or no).
-CACHE=yes
-
-# Reuse your GitHub CLI login ("gh auth login") for API requests (yes or no).
-# Logged-in requests have a much higher rate limit, and unchanged answers cost nothing.
-USE_GH_AUTH=no
-EOF
+# A settings file from an older version lacks the settings added since. Append them, commented out
+# (so nothing changes), with their explanation, and say so once. Existing lines are never touched.
+SETTINGS_ADDED=""
+add_missing_settings() {
+    local key missing=()
+    [[ -w $SETTINGS_FILE ]] || return 0
+    for key in $SETTINGS_KEYS; do
+        # an active or a commented-out line both count: a setting the user commented out stays that way
+        grep -Eq "^[[:space:]]*#?[[:space:]]*${key}[[:space:]]*=" "$SETTINGS_FILE" || missing+=("$key")
+    done
+    ((${#missing[@]})) || return 0
+    {
+        printf '\n# ---- Added by %s %s on %s. Commented out, so the built-in default applies.\n' \
+            "$TOOL_NAME" "$TOOL_VERSION" "$(date +%F)"
+        for key in "${missing[@]}"; do printf '\n'; settings_doc "$key"; done
+    } >> "$SETTINGS_FILE" 2>/dev/null || return 0
+    SETTINGS_ADDED="New settings were added to ${SETTINGS_FILE} (commented out, nothing changed): ${missing[*]}. See them with: ${TOOL_NAME} config"
 }
 
 init_config() {
@@ -191,7 +223,7 @@ init_config() {
             || warn "Ignoring ${f}: program file names may only use letters, digits, '.', '-' and '_'."
     done
     shopt -u nullglob
-    [[ -f $SETTINGS_FILE ]] || write_default_settings
+    if [[ -f $SETTINGS_FILE ]]; then add_missing_settings; else write_default_settings; fi
     parse_conf "$SETTINGS_FILE" "$SETTINGS_KEYS"
     setup_api_token
     if cache_enabled && [[ -d $CACHE_DIR ]]; then
@@ -1478,6 +1510,9 @@ main() {
 
     check_deps
     init_config
+    if [[ -n $SETTINGS_ADDED ]]; then
+        if [[ -z ${1:-} ]]; then NOTICE=$SETTINGS_ADDED; else info "$SETTINGS_ADDED" >&2; fi   # the menu clears the screen
+    fi
 
     case ${1:-} in
         "")     interactive ;;

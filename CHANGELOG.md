@@ -11,6 +11,7 @@ All notable changes to `relup` are listed here. The format follows [Keep a Chang
 - **ETag cache** for GitHub API answers (`~/.cache/relup/`). Unchanged answers are fast, and free of the rate limit when authenticated. If the rate limit is exhausted, the last saved answer is used and the user is told. Old cache entries are pruned after 30 days.
 - **`USE_GH_AUTH=yes`** setting: reuse the GitHub CLI login for API requests (`GITHUB_TOKEN` still takes precedence).
 - **Settings** `BIN_DIR`, `CACHE` and `CLEAR_SCREEN` (turn off screen clearing).
+- **New settings reach existing settings files.** When `settings.conf` lacks settings added by a newer version, they are appended commented out with their explanation, and you are told once. Values you have set are never changed.
 - Program config keys `BIN_NAME` and `DEST_DIR` for single-file programs.
 - When a release has both an `.rpm` and an AppImage or executable, the wizard asks which kind to track. It hides archives, packages for other systems, checksum and signature files, and other operating systems' builds.
 - Automated tests (`tests/run.sh`), using the real `jq` with fake `curl`, `rpm` and `sudo`.
@@ -22,6 +23,7 @@ All notable changes to `relup` are listed here. The format follows [Keep a Chang
 - With no input to answer a question (an unattended `relup -y update --all`, e.g. from cron), `relup` exited at the first question, such as "install a download without a checksum?", skipped every remaining program and still reported success. Now no input counts as "no": that program is skipped, the rest are updated, and the run ends with an error status.
 
 ### Changed
+- A new `settings.conf` has every setting commented out, so untouched settings follow the built-in defaults even if a later version changes them. Existing files keep their values; comment a line out to go back to following the default.
 - The wizard no longer asks about architecture when no file name mentions one.
 - Every wizard question shows "q to cancel", and an invalid answer asks again instead of ending the wizard.
 - The uninstall confirmation shows the exact command that will run.

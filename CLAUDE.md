@@ -29,6 +29,7 @@ A single-file Bash tool (`relup`) that keeps programs installed by hand up to da
 - **rpm installs are verified afterwards.** The installed version is re-queried; "dnf did nothing" is reported as a failure. The real package name is read from the downloaded rpm and written back into the config if the config was wrong.
 - **Binary installs** copy next to the target and `mv` over it (safe for a running program), refuse anything that isn't ELF/AppImage/script, use `sudo` only if the folder isn't writable, and record what was installed in the state file.
 - **GitHub API.** Answers are cached with ETags; the token comes from `GITHUB_TOKEN`, or from `gh auth token` when `USE_GH_AUTH=yes`. When rate limited, the last saved answer is used. Conditional (304) answers are free of the rate limit only when authenticated.
+- **settings.conf.** Active lines are the user's choices and are never rewritten. New files have every setting commented out (`#KEY=default`), so untouched settings follow the code's defaults. `add_missing_settings` appends settings missing from an older file, commented out, and says so once. `settings_doc` holds each setting's explanation and default: add new settings there and to `SETTINGS_KEYS`, and keep its defaults equal to the ones at the top of the script (a test checks this).
 - **The wizard should need almost no typing.** Names and package names are derived automatically; one confirmation before saving.
 
 ## What has and hasn't been verified on real systems

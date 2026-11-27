@@ -186,6 +186,10 @@ Rules: one `KEY='value'` per line, `#` comments on their own line, no inline com
 
 ### Settings
 
+`relup config` opens `~/.config/relup/settings.conf`. In a new file every setting is commented out (`#CACHE=yes`) and uses the built-in default shown after the `=`. To change a setting, remove the `#` and edit the value. A setting you have set this way is never changed by `relup`, while commented-out settings follow the built-in default even if a later version changes it.
+
+When a new version of `relup` adds settings that your file doesn't have yet, they are added at the end, commented out and with their explanation, and `relup` tells you once. Nothing you set is changed.
+
 | Key | Meaning | Default |
 |---|---|---|
 | `DOWNLOAD_DIR` | Where downloads are staged before installing. A temporary subfolder is created and removed afterwards. | `/tmp` |
